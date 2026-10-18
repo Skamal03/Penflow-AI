@@ -492,3 +492,12 @@ penflowai/
     ├── setup_kali_env.sh
     └── setup_wsl2.sh
 ```
+
+## TMP Initial UI
+
+```powershell
+git clone <your-repository-url>
+cd "<repository-folder>\web"
+npm ci
+npm run dev
+```
