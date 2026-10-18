@@ -1,0 +1,43 @@
+/.freebuff
+
+# Dependencies
+node_modules/
+
+# Build and test output
+dist/
+build/
+coverage/
+web/frontend/dist/
+web/server/dist/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and uploaded documents
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+web/server/data/roe-uploads/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Python-generated files and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+
+/Documentation

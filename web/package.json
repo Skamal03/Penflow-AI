@@ -1,0 +1,16 @@
+{
+  "name": "penflowai-web",
+  "private": true,
+  "workspaces": ["frontend", "server"],
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c green,cyan \"npm:dev --workspace @penflow/server\" \"npm:dev --workspace @penflow/frontend\"",
+    "typecheck": "npm run typecheck --workspace @penflow/server && npm run typecheck --workspace @penflow/frontend",
+    "build": "npm run build --workspace @penflow/server && npm run build --workspace @penflow/frontend",
+    "db:reset": "npm run db:reset --workspace @penflow/server",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

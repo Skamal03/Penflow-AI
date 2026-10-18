@@ -1,0 +1,39 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+  color-scheme: dark;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --bg: #0A0A0B;
+  --surface: #121214;
+  --surface-raised: #191A1C;
+  --border: #2A2B2F;
+  --border-strong: #3A3B40;
+  --text: #F4F4F5;
+  --text-muted: #A0A1A7;
+  --text-faint: #6C6D74;
+  --accent: #C6F24E;
+  --accent-ink: #0A0A0B;
+  --danger: #FF5C5C;
+  --warning: #FFB020;
+  --link: #6F9BFF;
+  --sev-medium: #B9BBC2;
+  --sev-low: #7A7C84;
+  --focus-ring: var(--accent);
+  --mono: 'IBM Plex Mono', monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+}

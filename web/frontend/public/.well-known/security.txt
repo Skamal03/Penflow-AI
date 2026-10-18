@@ -1,0 +1,4 @@
+Contact: mailto:[SECURITY EMAIL NOT PROVIDED]
+Expires: 2027-10-18T00:00:00.000Z
+Preferred-Languages: en
+Policy: https://[YOUR DOMAIN]/security
