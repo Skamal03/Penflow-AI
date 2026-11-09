@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { Plan } from '../lib/types';
-import { Alert, Badge, Button, Checkbox, EmptyState, ErrorState, Field, LoadingState } from '../components/ui';
+import { Alert, Badge, Button, Checkbox, EmptyState, ErrorState, Field, handleMagnetic, LoadingState, LucideIcon, NeoCard, resetMagnetic, RevealSection } from '../components/ui';
 import { renderLegalMarkdown } from './LegalPages';
 import accessibilityText from '../content/legal/accessibility.md?raw';
 import securityText from '../content/legal/security.md?raw';
@@ -26,12 +26,103 @@ export function PublicPage({ kind }: { kind: PublicKind }) {
 }
 
 function HomePage() {
+  const [fillHeight, setFillHeight] = useState(25);
+  useEffect(() => {
+    const handleScroll = () => {
+      const scrollY = window.scrollY;
+      const progress = Math.min(100, Math.max(15, (scrollY / 300) * 100));
+      setFillHeight(progress);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const controlSteps = [
+    { num: '01', title: 'Permission document', state: 'ROE', icon: 'roe' },
+    { num: '02', title: 'Review and approval', state: 'CHECK', icon: 'check' },
+    { num: '03', title: 'Approved target list', state: 'SCOPE', icon: 'target' },
+    { num: '04', title: 'Findings and audit trail', state: 'REPORT', icon: 'file-search' },
+  ];
+
   return <>
-    <section className="page-wrap hero">
-      <div><span className="early-label">Early access · Product in development</span><h1>Security testing that starts with permission.</h1><p className="lede">PenflowAI is a web security testing project designed to check authorization, keep testing within an approved scope, and explain findings in plain language.</p><div className="hero-actions"><Link className="button button-primary" to="/waitlist">Join the early access waitlist</Link><Link className="button button-secondary" to="/how-it-works">See how it works</Link></div><p className="small" style={{ marginTop: 18 }}>For systems you own or have written permission to test.</p></div>
-      <div className="hero-side"><span className="section-kicker">THE CONTROL PATH</span><ol className="pipeline-list"><li><span className="pipeline-num">01</span><strong>Permission document</strong><span className="pipeline-state">ROE</span></li><li><span className="pipeline-num">02</span><strong>Review and approval</strong><span className="pipeline-state">CHECK</span></li><li><span className="pipeline-num">03</span><strong>Approved target list</strong><span className="pipeline-state">SCOPE</span></li><li><span className="pipeline-num">04</span><strong>Findings and audit trail</strong><span className="pipeline-state">REPORT</span></li></ol><p className="small" style={{ marginTop: 18, marginBottom: 0 }}>The web workflow is under development. Scan execution is not connected.</p></div>
-    </section>
-    <section className="page-wrap section-block"><div className="section-heading"><div><span className="section-kicker">DESIGNED AROUND THREE CHECKS</span><h2>Governance before automation</h2></div></div><div className="public-grid"><article><span className="mono small">01 / AUTHORIZATION</span><h3>Check the permission first</h3><p>Rules of Engagement (ROE) documents go through automated checks and a human review path for flagged cases.</p></article><article><span className="mono small">02 / SCOPE</span><h3>Keep the target boundary explicit</h3><p>The intended workflow uses verified targets and a scope token before a run can begin.</p></article><article><span className="mono small">03 / EXPLANATION</span><h3>Make results reviewable</h3><p>Findings pair a score with evidence and plain-language context. AI output still needs human review.</p></article></div></section>
+    <RevealSection className="page-wrap hero">
+      <div className="hero-content">
+        <span className="pressed-tag">
+          Early access · Product in development
+        </span>
+        <h1>Security testing that starts with <span className="gradient-permission">permission</span>.</h1>
+        <p className="lede">PenflowAI is a web security testing project designed to check authorization, keep testing within an approved scope, and explain findings in plain language.</p>
+        <div className="hero-actions">
+          <Link className="button button-primary" to="/waitlist" onMouseMove={handleMagnetic} onMouseLeave={resetMagnetic}>
+            Join the early access waitlist
+          </Link>
+          <Link className="button button-secondary" to="/how-it-works">
+            See how it works <span className="button-arrow" aria-hidden="true">→</span>
+          </Link>
+        </div>
+        <p className="small" style={{ marginTop: 18 }}>For systems you own or have written permission to test.</p>
+      </div>
+
+      <NeoCard className="hero-side control-path-card">
+        <span className="section-kicker">THE CONTROL PATH</span>
+        <div className="control-pipeline-wrap">
+          <div className="connector-track" aria-hidden="true">
+            <div className="connector-fill" style={{ height: `${fillHeight}%` }} />
+          </div>
+          <ol className="control-pipeline">
+            {controlSteps.map((step) => (
+              <li key={step.num} className="control-step">
+                <div className="embossed-circle" aria-hidden="true">
+                  <LucideIcon name={step.icon} size={16} />
+                </div>
+                <div className="control-step-text">
+                  <span className="pipeline-num">{step.num}</span>
+                  <strong>{step.title}</strong>
+                </div>
+                <span className="pipeline-state">{step.state}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <p className="small" style={{ marginTop: 22, marginBottom: 0 }}>The web workflow is under development. Scan execution is not connected.</p>
+      </NeoCard>
+    </RevealSection>
+
+    <RevealSection className="page-wrap section-block">
+      <div className="section-heading">
+        <div>
+          <span className="section-kicker">DESIGNED AROUND THREE CHECKS</span>
+          <h2>Governance before automation</h2>
+        </div>
+      </div>
+      <div className="public-grid checks-grid">
+        <NeoCard className="check-card">
+          <div className="check-icon-circle" aria-hidden="true">
+            <LucideIcon name="shield-check" size={22} />
+          </div>
+          <span className="mono small check-mono">01 / AUTHORIZATION</span>
+          <h3>Check the permission first</h3>
+          <p>Rules of Engagement (ROE) documents go through automated checks and a human review path for flagged cases.</p>
+        </NeoCard>
+        <NeoCard className="check-card">
+          <div className="check-icon-circle" aria-hidden="true">
+            <LucideIcon name="target" size={22} />
+          </div>
+          <span className="mono small check-mono">02 / SCOPE</span>
+          <h3>Keep the target boundary explicit</h3>
+          <p>The intended workflow uses verified targets and a scope token before a run can begin.</p>
+        </NeoCard>
+        <NeoCard className="check-card">
+          <div className="check-icon-circle" aria-hidden="true">
+            <LucideIcon name="file-search" size={22} />
+          </div>
+          <span className="mono small check-mono">03 / EXPLANATION</span>
+          <h3>Make results reviewable</h3>
+          <p>Findings pair a score with evidence and plain-language context. AI output still needs human review.</p>
+        </NeoCard>
+      </div>
+    </RevealSection>
   </>;
 }
 

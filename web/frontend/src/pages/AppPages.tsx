@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Alert, Badge, Button, Checkbox, EmptyState, ErrorState, Field, LoadingState, LogViewer, RiskScore, StageTracker } from '../components/ui';
+import { Alert, Badge, Button, Checkbox, EmptyState, ErrorState, Field, GlassCard, LoadingState, LogViewer, LucideIcon, RiskScore, StageTracker } from '../components/ui';
 import { api } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { AuditEvent, Finding, Plan, Roe, Run, Target } from '../lib/types';
@@ -28,16 +28,167 @@ function StatusBadge({ value }: { value: string }) {
   return <Badge tone={tone}>{value.replaceAll('_', ' ')}</Badge>;
 }
 
+function CountUp({ end, duration = 800 }: { end: number; duration?: number }) {
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setVal(end);
+      return;
+    }
+    const startTime = performance.now();
+    let id: number;
+    const step = (time: number) => {
+      const elapsed = time - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      setVal(Math.round(ease * end));
+      if (progress < 1) id = requestAnimationFrame(step);
+    };
+    id = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(id);
+  }, [end, duration]);
+  return <>{val}</>;
+}
+
+function ProgressRing({ value, max }: { value: number; max: number }) {
+  const r = 18;
+  const c = 2 * Math.PI * r;
+  const pct = max > 0 ? Math.min(Math.max(value / max, 0), 1) : 0;
+  const offset = c * (1 - pct);
+  return (
+    <div className="stat-progress-ring">
+      <svg width="44" height="44" viewBox="0 0 44 44">
+        <circle cx="22" cy="22" r={r} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="3.5" />
+        <circle
+          cx="22"
+          cy="22"
+          r={r}
+          fill="none"
+          stroke="var(--lime)"
+          strokeWidth="3.5"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform="rotate(-90 22 22)"
+          style={{ transition: 'stroke-dashoffset 800ms ease' }}
+        />
+      </svg>
+      <span className="mono stat-num-sm">{value} / {max}</span>
+    </div>
+  );
+}
+
 export function DashboardPage() {
   const { data, loading, error, reload } = useApi<{ runs: Run[]; reports: Array<{ id: string; run_id: string }>; targetCount: number; plan: Plan; scansUsed: number }>('/dashboard');
   if (loading) return <LoadingState label="Loading workspace overview" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
   const runs = data?.runs ?? [];
   return <><PageHeader eyebrow="WORKSPACE / OVERVIEW" title="Dashboard" detail="Your test activity, approved scope, and recent report." action={<Link className="button button-primary" to="/app/targets/new">Start a new security test</Link>} />
-    <div className="stats-grid"><div className="stat"><span>Test runs</span><strong>{runs.length}</strong></div><div className="stat"><span>Targets</span><strong>{data?.targetCount ?? 0}</strong></div><div className="stat"><span>Current plan</span><strong>{data?.plan.name ?? 'Free'}</strong></div><div className="stat"><span>Scans this month</span><strong>{data?.scansUsed ?? 0} / {data?.plan.scans ?? 0}</strong></div></div>
-    <div className="dashboard-grid"><section className="panel"><div className="panel-heading"><h2>Recent test runs</h2><Link to="/app/runs">All runs</Link></div>{runs.length ? <ul className="inline-list">{runs.slice(0, 5).map((run) => <li key={run.id}><Link to={`/app/runs/${run.id}`}><span className="mono">{run.id}</span><span className="small"> · {run.stage}</span></Link><StatusBadge value={run.status} /></li>)}</ul> : <EmptyState title="No test runs yet. Start your first security test." />}</section>
-      <section className="panel"><div className="panel-heading"><h2>Latest report</h2></div>{data?.reports[0] ? <p><Link to={`/app/reports/${data.reports[0].id}`}>Open report for <code>{data.reports[0].run_id}</code></Link></p> : <EmptyState title="No reports yet." />}</section></div>
-    <section className="section-block"><span className="section-kicker">SAFE START</span><h2>Permission before activity</h2><p className="small">A test needs a verified target and an approved Rules of Engagement (ROE) document with a scope token. The connected engine is not available in this build.</p><div className="hero-actions"><Link className="button button-secondary" to="/app/targets">Review targets</Link><Link className="button button-secondary" to="/app/roe/new">Submit ROE document</Link></div></section>
+    <div className="stats-grid">
+      <GlassCard className="stat-card" stagger={0}>
+        <div className="stat-icon-wrap"><LucideIcon name="runs" size={18} /></div>
+        <div className="stat-meta">
+          <span>Test runs</span>
+          <strong className="stat-num mono"><CountUp end={runs.length} /></strong>
+        </div>
+      </GlassCard>
+      <GlassCard className="stat-card" stagger={1}>
+        <div className="stat-icon-wrap"><LucideIcon name="targets" size={18} /></div>
+        <div className="stat-meta">
+          <span>Targets</span>
+          <strong className="stat-num mono"><CountUp end={data?.targetCount ?? 0} /></strong>
+        </div>
+      </GlassCard>
+      <GlassCard className="stat-card" stagger={2}>
+        <div className="stat-icon-wrap"><LucideIcon name="shield" size={18} /></div>
+        <div className="stat-meta">
+          <span>Current plan</span>
+          <strong className="stat-num mono">{data?.plan.name ?? 'Free'}</strong>
+        </div>
+      </GlassCard>
+      <GlassCard className="stat-card" stagger={3}>
+        <div className="stat-icon-wrap"><LucideIcon name="layers" size={18} /></div>
+        <div className="stat-meta">
+          <span>Scans this month</span>
+          <ProgressRing value={data?.scansUsed ?? 0} max={data?.plan.scans ?? 2} />
+        </div>
+      </GlassCard>
+    </div>
+    <div className="dashboard-grid">
+      <GlassCard className="dashboard-panel runs-card glass-panel" stagger={4}>
+        <div className="panel-heading">
+          <h2>Recent test runs</h2>
+          <Link to="/app/runs" className="panel-link">All runs →</Link>
+        </div>
+        <div className="panel-body">
+          {runs.length ? (
+            <ul className="inline-list">
+              {runs.slice(0, 5).map((run) => (
+                <li key={run.id}>
+                  <Link to={`/app/runs/${run.id}`}>
+                    <span className="mono">{run.id}</span>
+                    <span className="small"> · {run.stage}</span>
+                  </Link>
+                  <StatusBadge value={run.status} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No test runs yet." icon={<LucideIcon name="runs" size={24} />}>
+              Start your first security test.
+            </EmptyState>
+          )}
+        </div>
+      </GlassCard>
+      <GlassCard className="dashboard-panel report-card glass-panel" stagger={5}>
+        <div className="panel-heading">
+          <h2>Latest report</h2>
+        </div>
+        <div className="panel-body">
+          {data?.reports[0] ? (
+            <p><Link to={`/app/reports/${data.reports[0].id}`}>Open report for <code>{data.reports[0].run_id}</code></Link></p>
+          ) : (
+            <EmptyState title="No reports yet." icon={<LucideIcon name="reports" size={24} />}>
+              Run a test to generate an audit report.
+            </EmptyState>
+          )}
+        </div>
+      </GlassCard>
+    </div>
+    <GlassCard className="safestart-card glass-panel" stagger={6}>
+      <div className="safestart-header">
+        <div>
+          <span className="section-kicker">SAFE START</span>
+          <h2>Permission before activity</h2>
+          <p className="small">A test needs a verified target and an approved Rules of Engagement (ROE) document with a scope token. The connected engine is not available in this build.</p>
+        </div>
+        <div className="hero-actions">
+          <Link className="button button-secondary" to="/app/targets">Review targets</Link>
+          <Link className="button button-primary" to="/app/roe/new">Submit ROE document</Link>
+        </div>
+      </div>
+      <div className="safe-stepper" aria-label="Safe start process steps">
+        <div className="safe-step is-current">
+          <div className="step-circle"><span className="step-num">1</span></div>
+          <div className="step-content"><strong>ROE</strong><span className="small">Rules of engagement</span></div>
+        </div>
+        <div className="step-connector" />
+        <div className="safe-step">
+          <div className="step-circle"><span className="step-num">2</span></div>
+          <div className="step-content"><strong>Review</strong><span className="small">Approval check</span></div>
+        </div>
+        <div className="step-connector" />
+        <div className="safe-step">
+          <div className="step-circle"><span className="step-num">3</span></div>
+          <div className="step-content"><strong>Scope</strong><span className="small">Scope token</span></div>
+        </div>
+        <div className="step-connector" />
+        <div className="safe-step">
+          <div className="step-circle"><span className="step-num">4</span></div>
+          <div className="step-content"><strong>Report</strong><span className="small">Verified findings</span></div>
+        </div>
+      </div>
+    </GlassCard>
   </>;
 }
 
