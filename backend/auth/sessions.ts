@@ -44,8 +44,8 @@ export type RotationResult =
   | { status: 'invalid' };
 
 export async function rotateSession(refreshToken: string, meta: SessionMeta, res: Response): Promise<RotationResult> {
-  const session = await one<{ id: string; user_id: string; role: Role; replaced_by: string | null; revoked_at: Date | null; expires_at: Date; last_used_at: Date }>(
-    `SELECT s.id, s.user_id, s.replaced_by, s.revoked_at, s.expires_at, s.last_used_at, u.role
+  const session = await one<{ id: string; user_id: string; role: Role; is_active: boolean; replaced_by: string | null; revoked_at: Date | null; expires_at: Date; last_used_at: Date }>(
+    `SELECT s.id, s.user_id, s.replaced_by, s.revoked_at, s.expires_at, s.last_used_at, u.role, u.is_active
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.refresh_token_hash = $1`,
     [sha256(refreshToken)],
   );
@@ -55,24 +55,31 @@ export async function rotateSession(refreshToken: string, meta: SessionMeta, res
     await run('UPDATE sessions SET revoked_at = COALESCE(revoked_at, $1) WHERE user_id = $2', [now, session.user_id]);
     return { status: 'reuse', userId: session.user_id };
   }
-  if (session.revoked_at || session.expires_at.getTime() <= now.getTime() || now.getTime() - session.last_used_at.getTime() > idleMs) {
+  if (!session.is_active || session.revoked_at || session.expires_at.getTime() <= now.getTime() || now.getTime() - session.last_used_at.getTime() > idleMs) {
     await run('UPDATE sessions SET revoked_at = COALESCE(revoked_at, $1) WHERE id = $2', [now, session.id]);
     return { status: 'invalid' };
   }
   const nextToken = randomBytes(32).toString('base64url');
   const nextId = randomUUID();
-  await transaction(async (client) => {
-    await client.query('INSERT INTO sessions (id, user_id, refresh_token_hash, user_agent, ip, created_at, expires_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $6)', [
-      nextId,
-      session.user_id,
-      sha256(nextToken),
-      meta.userAgent,
-      meta.ip,
-      now,
-      new Date(now.getTime() + absoluteMs),
-    ]);
-    await client.query('UPDATE sessions SET revoked_at = $1, replaced_by = $2 WHERE id = $3', [now, nextId, session.id]);
-  });
+  try {
+    await transaction(async (client) => {
+      await client.query('INSERT INTO sessions (id, user_id, refresh_token_hash, user_agent, ip, created_at, expires_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $6)', [
+        nextId,
+        session.user_id,
+        sha256(nextToken),
+        meta.userAgent,
+        meta.ip,
+        now,
+        session.expires_at,
+      ]);
+      const rotated = await client.query('UPDATE sessions SET revoked_at = $1, replaced_by = $2 WHERE id = $3 AND replaced_by IS NULL AND revoked_at IS NULL', [now, nextId, session.id]);
+      if (rotated.rowCount !== 1) throw new Error('rotation_conflict');
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'rotation_conflict') throw error;
+    await run('UPDATE sessions SET revoked_at = COALESCE(revoked_at, $1) WHERE user_id = $2', [now, session.user_id]);
+    return { status: 'reuse', userId: session.user_id };
+  }
   setAuthCookies(res, { id: session.user_id, role: session.role }, nextId, nextToken);
   return { status: 'rotated', userId: session.user_id, role: session.role, sessionId: nextId };
 }
