@@ -3,7 +3,7 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { AccessDenied, AppShell, NotFound, PublicLayout } from './components/ui';
 import { useSession } from './lib/session';
 import type { Role } from './lib/types';
-import { LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/AuthPages';
+import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage, VerifyEmailPage } from './pages/AuthPages';
 import {
   AdminPage, BillingPage, DashboardPage, FindingsPage, ReportViewPage, ReportsPage,
   ReviewQueuePage, RoeNewPage, RoeStatusPage, RunMonitorPage, RunsPage, SettingsPage, TargetsPage,
@@ -54,6 +54,7 @@ function RouteFocus() {
       '/admin/audit-log': 'Audit log · PenflowAI',
       '/login': 'Log in · PenflowAI',
       '/signup': 'Sign up · PenflowAI',
+      '/forgot-password': 'Forgot password · PenflowAI',
       '/reset-password': 'Reset password · PenflowAI',
       '/verify-email': 'Verify email · PenflowAI',
       '/legal/privacy': 'Privacy · PenflowAI',
@@ -98,6 +99,7 @@ export function AppRouter() {
       <Route path="/legal/:slug" element={<LegalPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
     </Route>

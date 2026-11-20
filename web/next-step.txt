@@ -1,0 +1,52 @@
+Extend the existing backend/ auth system. If backend/ does not exist yet, create it per the earlier structure (one API, web/ stays frontend only). Do not touch scan-engine modules or the frontend design. Edit in place, minimal diffs, no explanations, no code comments, no placeholder/TODO code, no unused deps. Reply only with changed/created files and commands I must run. Ask no questions.
+
+1) DATABASE
+- Add users.email_verified_at (timestamptz, nullable).
+- New table email_tokens(id uuid, user_id, purpose enum[verify_email, reset_password], token_hash, expires_at, used_at, created_at, ip). Index on token_hash. One Alembic migration.
+
+2) TOKENS
+- secrets.token_urlsafe(32), store only the SHA-256 hash. Single-use: set used_at on success. Constant-time comparison.
+- verify_email TTL 24h, reset_password TTL 30 min. Issuing a new token of the same purpose invalidates older unused ones.
+
+3) ENDPOINTS (add to the public allowlist; all rate-limited)
+- POST /auth/verify-email {token}: marks email verified. Generic error for invalid, expired or used tokens.
+- POST /auth/resend-verification: authenticated, 3/hour per user.
+- POST /auth/forgot-password {email}: ALWAYS return the same 202 message and take equal time whether or not the email exists. 3/hour per IP+email. Send mail only if the account exists and is active.
+- POST /auth/reset-password {token, new_password}: apply the existing password policy (min 12, max 72 bytes, blocklist), hash with bcrypt cost 12, mark the token used, revoke ALL sessions of that user, reset failed_attempts and locked_until, write an audit event, and send a "your password was changed" notice email.
+- Registration also issues a verify_email token and sends the email. Registration must not reveal whether an email already exists: return the same response, and if the email exists, send that address an "account already exists" notice instead.
+
+4) AUTHORIZATION
+- New dependency require_verified. Apply it to creating targets, submitting ROE documents and starting test runs. Login, /auth/me, billing view and settings still work for unverified users. /auth/me returns email_verified boolean.
+- Email changes are out of scope.
+
+5) EMAIL SERVICE
+- backend/app/email/{sender.py, templates/}. SMTP via env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_STARTTLS, APP_BASE_URL. Use smtplib or aiosmtplib in a FastAPI BackgroundTask (or the existing framework's equivalent), so the request never waits on mail.
+- Plain-text + simple HTML templates for: verify email, reset password, password changed, account already exists. Escape all variables. Links are {APP_BASE_URL}/verify-email#token=... and {APP_BASE_URL}/reset-password#token=... (use the URL fragment, not a query string, so the token never reaches server logs or Referer headers).
+- docker-compose.yml: add a mailpit service (SMTP 1025, web UI 8025, bound to 127.0.0.1) for local dev. Update .env.example with the SMTP vars pointing at mailpit.
+- Never log tokens, links or email bodies. Log only audit events (verification sent/completed, reset requested/completed).
+
+6) FRONTEND (minimum only, reuse existing components and styling)
+- New pages /verify-email, /forgot-password, /reset-password, plus a "Forgot password?" link on the login page. Read the token from location.hash, POST it, then clear the hash with history.replaceState. Add <meta name="referrer" content="no-referrer"> on these pages.
+- Dashboard: a slim dismissible banner "Verify your email to start tests" with a Resend button, shown only when email_verified is false. Keep the existing design tokens.
+
+7) TESTS (pytest)
+Cover: verify success, expired token, reused token, forgot-password identical response for known/unknown email, reset success revokes all sessions, reset with weak password rejected, old reset token invalidated by a newer one, unverified user gets 403 on test-run creation, resend rate limit.
+
+8) FINISH
+Run migrations, tests and lint once and fix errors. Output the commands to start Postgres, Mailpit and the API.
+
+CLEAN CODE RULES (apply to every change in this task):
+
+CODE QUALITY
+- Write the smallest correct solution. No dead code, unused imports, unused variables, unused functions, commented-out code, debug prints, or speculative "future use" abstractions.
+- Reuse existing helpers, components and utilities before writing new ones. No duplicated logic: extract it once.
+- One responsibility per function/module. Prefer simple, flat, readable logic over clever one-liners. No over-engineering (no extra classes, layers or config for a single use).
+- Never remove input validation, error handling, auth checks, security headers, rate limits or tests to save lines. Those are required code, not extra code.
+- Do not rewrite or reformat code outside the scope of this task. Minimal diffs only.
+
+FILE CLEANUP (strict, safe)
+- Delete ONLY files that you created during this task and that are now unused (temp scripts, scratch files, duplicate or superseded files, generated logs, empty folders you made).
+- Before deleting any file, confirm it is unused by searching the whole repo for imports and references. If anything references it, keep it.
+- NEVER delete or modify: .env, .env.example, .git, .gitignore, migrations, lockfiles, node_modules contents, user data, Documentation/, README.md, LICENSE, trained models (.pkl), sample or training data, or any file that existed before this task, unless I name it explicitly.
+- If a pre-existing file looks unused, do NOT delete it. List it under "Suspected unused" for me to decide.
+- Remove dependencies from requirements.txt / package.json only if you added them in this task and ended up not using them.

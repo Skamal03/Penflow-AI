@@ -451,12 +451,16 @@ penflowai/
 │   └── logs/
 │       └── (timestamped run logs)
 │
-├── web/                              # separate web interface (SaaS front-end) — full spec in WEBSITE_GUI.md
-│   ├── backend_api/
-│   │   ├── app.py
-│   │   ├── routes/
-│   │   ├── auth/
-│   │   └── billing/                  # provider webhooks only, no card data
+├── backend/                          # the single API (Express + TypeScript)
+│   ├── index.ts
+│   ├── app.ts
+│   ├── routes/
+│   ├── auth/
+│   ├── db/
+│   ├── email/
+│   └── tests/
+│
+├── web/                              # separate web interface (frontend only) — full spec in WEBSITE_GUI.md
 │   ├── frontend/
 │   │   ├── src/
 │   │   │   ├── pages/                # public site, legal pages, app screens, admin

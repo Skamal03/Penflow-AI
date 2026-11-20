@@ -79,11 +79,21 @@ function ProgressRing({ value, max }: { value: number; max: number }) {
 }
 
 export function DashboardPage() {
+  const { user } = useSession();
   const { data, loading, error, reload } = useApi<{ runs: Run[]; reports: Array<{ id: string; run_id: string }>; targetCount: number; plan: Plan; scansUsed: number }>('/dashboard');
+  const [verifyDismissed, setVerifyDismissed] = useState(() => sessionStorage.getItem('verify-banner-dismissed') === '1');
+  const [verifyMessage, setVerifyMessage] = useState('');
+  const [resending, setResending] = useState(false);
+  async function resendVerification() {
+    setResending(true); setVerifyMessage('');
+    try { const result = await api.post<{ message: string }>('/auth/resend-verification', {}); setVerifyMessage(result.message); }
+    catch (caught) { setVerifyMessage((caught as Error).message); }
+    finally { setResending(false); }
+  }
   if (loading) return <LoadingState label="Loading workspace overview" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
   const runs = data?.runs ?? [];
-  return <><PageHeader eyebrow="WORKSPACE / OVERVIEW" title="Dashboard" detail="Your test activity, approved scope, and recent report." action={<Link className="button button-primary" to="/app/targets/new">Start a new security test</Link>} />
+  return <>{user && !user.emailVerified && !verifyDismissed && <div className="honesty-banner glass-panel" role="status"><div className="banner-content"><span className="amber-dot" aria-hidden="true" /><span><strong>Verify your email</strong> to start tests.</span>{verifyMessage && <span className="small">{verifyMessage}</span>}</div><div className="hero-actions"><Button variant="quiet" disabled={resending} onClick={() => void resendVerification()}>{resending ? 'Sending…' : 'Resend email'}</Button><button className="banner-dismiss" aria-label="Dismiss email verification reminder" onClick={() => { sessionStorage.setItem('verify-banner-dismissed', '1'); setVerifyDismissed(true); }}>Dismiss</button></div></div>}<PageHeader eyebrow="WORKSPACE / OVERVIEW" title="Dashboard" detail="Your test activity, approved scope, and recent report." action={<Link className="button button-primary" to="/app/targets/new">Start a new security test</Link>} />
     <div className="stats-grid">
       <GlassCard className="stat-card" stagger={0}>
         <div className="stat-icon-wrap"><LucideIcon name="runs" size={18} /></div>
@@ -274,7 +284,7 @@ export function RoeStatusPage() {
     <div className="panel"><div className="panel-heading"><h2>ROE verdict</h2><StatusBadge value={roe.status} /></div><ol className="roe-rail">{['Submitted', 'Automated check', 'Manual review', 'Scope token'].map((label, index) => <li key={label} className={index <= step ? 'is-current' : ''}>{String(index + 1).padStart(2, '0')} · {label}</li>)}</ol>
       <p><strong>Automated decision:</strong> {roe.automated_decision}{roe.confidence !== null && <> · confidence <code>{roe.confidence.toFixed(2)}</code></>}</p>
       {reasons.length > 0 ? <><h3>Automated check reasons</h3><ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <p className="small">No automated check reasons were recorded.</p>}
-      {roe.reviewer_id && <div className="section-block"><h3>Manual review</h3><p><strong>Decision:</strong> {roe.decision?.replaceAll('_', ' ')}</p><p><strong>Reviewer:</strong> {roe.reviewer_id === 'usr_sana' ? 'Sana Malik' : 'Assigned reviewer'}</p><p><strong>Note:</strong> {roe.note}</p><p className="small">{roe.decided_at ? new Date(roe.decided_at).toLocaleString() : ''}</p></div>}
+      {roe.reviewer_id && <div className="section-block"><h3>Manual review</h3><p><strong>Decision:</strong> {roe.decision?.replaceAll('_', ' ')}</p><p><strong>Reviewer:</strong> {roe.reviewer_id === '33333333-3333-4333-8333-333333333333' ? 'Sana Malik' : 'Assigned reviewer'}</p><p><strong>Note:</strong> {roe.note}</p><p className="small">{roe.decided_at ? new Date(roe.decided_at).toLocaleString() : ''}</p></div>}
     </div>
     <section className="panel"><div className="panel-heading"><h2>Approved scope</h2></div>{scope.length ? <ul className="scope-list">{scope.map((target) => <li key={target}><code>{target}</code></li>)}</ul> : <p className="small">No target scope is attached.</p>}
       {roe.scope_token ? <div className="scope-token" style={{ marginTop: 18 }}><strong>Scope token issued</strong><p className="small">Issued {roe.scope_token_issued_at ? new Date(roe.scope_token_issued_at).toLocaleString() : ''}. The displayed value is a stored token hash.</p><code>{roe.scope_token}</code></div> : <div className="scope-none" style={{ marginTop: 18 }}><strong>No token issued</strong><p className="small" style={{ margin: '5px 0 0' }}>No security test can start until this ROE is approved and a scope token is issued.</p></div>}

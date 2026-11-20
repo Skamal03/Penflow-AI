@@ -1,27 +1,35 @@
 {
-  "name": "@penflow/server",
+  "name": "@penflow/backend",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "db:reset": "tsx db/reset.ts"
+    "db:reset": "tsx db/reset.ts",
+    "test": "node --import tsx --test tests/auth.test.ts",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
-    "better-sqlite3": "^11.8.1",
     "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "nodemailer": "^10.6.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/multer": "^2.0.0",
     "@types/node": "^22.13.4",
-    "tsx": "^4.19.3"
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
   }
 }

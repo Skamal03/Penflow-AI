@@ -12,24 +12,18 @@ export class ApiError extends Error {
   }
 }
 
-let csrfToken: string | null = null;
+const refreshExempt = new Set(['/auth/login', '/auth/register', '/auth/refresh']);
 
-async function getCsrfToken(): Promise<string> {
-  if (csrfToken) return csrfToken;
-  const response = await fetch('/api/csrf', { credentials: 'include' });
-  const body = await response.json() as { csrfToken: string };
-  csrfToken = body.csrfToken;
-  return csrfToken;
-}
-
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
-  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    headers.set('x-csrf-token', await getCsrfToken());
-    if (!(init.body instanceof FormData)) headers.set('content-type', 'application/json');
-  }
+  headers.set('x-requested-with', 'fetch');
+  if (init.body !== undefined && !(init.body instanceof FormData)) headers.set('content-type', 'application/json');
   const response = await fetch(`/api${path}`, { ...init, method, headers, credentials: 'include' });
+  if (response.status === 401 && !retried && !refreshExempt.has(path)) {
+    const refreshed = await fetch('/api/auth/refresh', { method: 'POST', headers: { 'x-requested-with': 'fetch' }, credentials: 'include' });
+    if (refreshed.ok) return request<T>(path, init, true);
+  }
   if (response.status === 204) return undefined as T;
   const body = await response.json().catch(() => ({})) as ApiErrorBody & T;
   if (!response.ok) throw new ApiError(body.error ?? 'The request could not be completed.', response.status, body.fields ?? {});

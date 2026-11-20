@@ -9,7 +9,7 @@ No external images, logos, icon packs, hosted fonts, or third-party scripts are 
 | React Router | npm | MIT | Client-side routing |
 | Vite / React plugin | npm | MIT | Frontend development and build |
 | Express / Helmet / cookie-parser | npm | MIT | HTTP API and security headers |
-| better-sqlite3 | npm | MIT | SQLite storage |
+| pg | npm | MIT | PostgreSQL client |
 | bcryptjs | npm | MIT | Password hashing |
 | Multer | npm | MIT | Bounded multipart ROE upload |
 | Penflow wordmark glyph and favicon | Authored in this project | Project-authored | CSS bracket mark and favicon |

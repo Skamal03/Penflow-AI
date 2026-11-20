@@ -8,7 +8,7 @@ dist/
 build/
 coverage/
 web/frontend/dist/
-web/server/dist/
+backend/dist/
 
 # Local environment and secrets
 .env
@@ -20,7 +20,7 @@ web/server/dist/
 *.db-*
 *.sqlite
 *.sqlite3
-web/server/data/roe-uploads/
+backend/data/roe-uploads/
 
 # Logs
 *.log

@@ -21,7 +21,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const refresh = async () => {
     try {
-      const result = await api.get<{ user: User | null }>('/session');
+      const result = await api.get<{ user: User }>('/auth/me');
       setUser(result.user);
     } catch {
       setUser(null);
@@ -41,8 +41,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setUser(result.user);
     },
     signUp: async (payload) => {
-      const result = await api.post<SessionResponse>('/auth/signup', payload);
-      setUser(result.user);
+      await api.post('/auth/register', payload);
     },
     signOut: async () => {
       await api.post('/auth/logout');

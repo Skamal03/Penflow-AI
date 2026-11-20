@@ -8,7 +8,7 @@ We use **only essential cookies**. They are needed for the site to work and cann
 
 | Cookie name (example — match your real names) | Purpose | Lasts | Type |
 |---|---|---|---|
-| `pf_session` | Keeps you logged in | Until you log out or [N] hours | Essential, first-party |
+| `pf_access`, `pf_refresh` | Keeps you signed in | 15 minutes (access) and up to 7 days (refresh) | Essential, first-party |
 | `pf_csrf` | Protects forms against forged requests | Session | Essential, first-party |
 | `pf_prefs` (only if you store any choice, e.g. cookie notice dismissed or language) | Remembers a setting you chose | [N] months | Essential/preference, first-party |
 
