@@ -1,4 +1,5 @@
 /.freebuff
+/.pgverify
 
 # Dependencies
 node_modules/

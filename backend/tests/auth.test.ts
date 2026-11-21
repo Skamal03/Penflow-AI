@@ -162,7 +162,7 @@ test('a requester is denied an admin route', async () => {
 test('another user\'s run returns 404 instead of 403', async () => {
   const client = new Client();
   assert.equal((await client.login('requester2@penflow.test', demoPassword)).status, 200);
-  const run = await db.one<{ id: string }>('SELECT id FROM runs r JOIN users u ON u.id = r.owner_id WHERE u.email = $1 ORDER BY r.started_at', ['requester@penflow.test']);
+  const run = await db.one<{ id: string }>('SELECT r.id FROM runs r JOIN users u ON u.id = r.owner_id WHERE u.email = $1 ORDER BY r.started_at', ['requester@penflow.test']);
   assert.ok(run);
   assert.equal((await client.request(`/api/runs/${run.id}`)).status, 404);
 });

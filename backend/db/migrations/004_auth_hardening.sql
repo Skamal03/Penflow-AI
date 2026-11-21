@@ -2,7 +2,15 @@ ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN locked_until TIMESTAMPTZ;
 
-ALTER TABLE sessions RENAME COLUMN token_hash TO refresh_token_hash;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'token_hash'
+  ) THEN
+    ALTER TABLE sessions RENAME COLUMN token_hash TO refresh_token_hash;
+  END IF;
+END $$;
 ALTER TABLE sessions ADD COLUMN user_agent TEXT;
 ALTER TABLE sessions ADD COLUMN ip TEXT;
 ALTER TABLE sessions ADD COLUMN revoked_at TIMESTAMPTZ;
