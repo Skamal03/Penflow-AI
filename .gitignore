@@ -1,5 +1,7 @@
 /.freebuff
 /.pgverify
+/.vscode
+.gitignore
 
 # Dependencies
 node_modules/
