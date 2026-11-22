@@ -34,6 +34,15 @@ def _wait(status_path: str, scan_id: str, stop_path: str, max_wait: int) -> None
     _get(stop_path, scanId=scan_id)  # timed out: stop and keep partial results
 
 
+def _wait_passive(max_wait: int = 120) -> None:
+    waited = 0
+    while waited < max_wait:
+        if str(_get("/JSON/pscan/view/recordsToScan/").get("recordsToScan")) == "0":
+            return
+        time.sleep(3)
+        waited += 3
+
+
 @register("zap", phase="vulnerability_assessment", description="OWASP ZAP spider + passive + active scan",
           active=True)
 def run(target_url: str, active_scan: bool = True, max_wait: int = 300) -> list[dict]:
@@ -44,6 +53,10 @@ def run(target_url: str, active_scan: bool = True, max_wait: int = 300) -> list[
         ]
 
     _get("/JSON/core/view/version/")  # fails fast if ZAP is not running
+    rules = _get("/JSON/ascan/view/scanners/").get("scanners", [])
+    if len(rules) < 10:
+        raise ToolError(f"ZAP has only {len(rules)} active scan rules: install the 'ascanrules' and "
+                        "'pscanrules' add-ons (a scan would find nothing)")
 
     # Keep ZAP inside the target: a context that only includes the target origin.
     ctx_name = f"penflow_{uuid.uuid4().hex[:8]}"
@@ -51,6 +64,7 @@ def run(target_url: str, active_scan: bool = True, max_wait: int = 300) -> list[
     _get("/JSON/context/action/includeInContext/", contextName=ctx_name,
          regex=f"^{re.escape(origin_of(target_url))}.*")
 
+    _get("/JSON/core/action/accessUrl/", url=target_url, followRedirects="true")  # put the target in ZAP's site tree
     spider_id = _get("/JSON/spider/action/scan/", url=target_url, contextName=ctx_name, recurse="true").get("scan")
     if spider_id is None:
         raise ToolError("ZAP did not start the spider")
@@ -62,7 +76,12 @@ def run(target_url: str, active_scan: bool = True, max_wait: int = 300) -> list[
             raise ToolError("ZAP did not start the active scan")
         _wait("/JSON/ascan/view/status/", ascan_id, "/JSON/ascan/action/stop/", max_wait)
 
+    _wait_passive()
     alerts = _get("/JSON/core/view/alerts/", baseurl=target_url).get("alerts", [])
+    urls = _get("/JSON/core/view/urls/", baseurl=target_url).get("urls", [])
+    if not alerts and len(urls) <= 2:
+        raise ToolError(f"ZAP only saw {len(urls)} URL(s) and found no alerts: the classic spider can't crawl "
+                        "single-page apps like Juice Shop (AJAX spider needed)")
 
     # Group identical alerts (same name + risk) so the report isn't flooded with duplicates.
     grouped: dict[tuple, dict] = {}

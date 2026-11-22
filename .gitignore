@@ -1,7 +1,12 @@
 /.freebuff
 /.pgverify
-/.vscode
+.vscode
 .gitignore
+
+.venv/
+core/reports/
+core/logging_system/logs/
+/WSL data
 
 # Dependencies
 node_modules/

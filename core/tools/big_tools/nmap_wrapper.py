@@ -1,9 +1,8 @@
+from socket import timeout
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from tools.tool_registry import register
 from tools.shell import run_cmd, finding, host_of, is_dry_run, ToolError
-
-COMMON_PORTS = [21, 22, 25, 53, 80, 110, 143, 443, 445, 3000, 3306, 5432, 6379, 8000, 8080, 8443, 9000]
 
 
 @register("nmap", phase="reconnaissance", binary="nmap",
@@ -13,12 +12,13 @@ def run(target_url: str, timeout: int = 300) -> list[dict]:
         return [finding("nmap", "Open port 3000/tcp: Node.js Express", "Informational", target_url, "fake dry-run data")]
 
     host = host_of(target_url)
-    ports = set(COMMON_PORTS)
+    p = urlparse(target_url)
+    ports = {p.port or (443 if p.scheme == "https" else 80)}
     if urlparse(target_url).port:
         ports.add(urlparse(target_url).port)
     port_arg = ",".join(str(p) for p in sorted(ports))
 
-    proc = run_cmd(["nmap", "-sV", "--version-light", "-T4", "-Pn", "-p", port_arg, "-oX", "-", host], timeout=timeout)
+    proc = run_cmd(["nmap", "-sV", "-T4", "-Pn", "--max-retries", "1", "--host-timeout", "120s", "-p", port_arg, "-oX", "-", host], timeout=timeout)
     if proc.returncode != 0 or not proc.stdout.strip():
         raise ToolError(f"nmap failed: {(proc.stderr or '')[-200:]}")
     try:
@@ -35,7 +35,9 @@ def run(target_url: str, timeout: int = 300) -> list[dict]:
         svc_text = ""
         if svc is not None:
             svc_text = " ".join(x for x in [svc.get("name"), svc.get("product"), svc.get("version")] if x)
+            if svc.get("method") == "table":  # nmap only guessed from the port number
+                svc_text = f"unconfirmed (nmap guess: {svc.get('name')})"
         pid, proto = port.get("portid"), port.get("protocol")
         findings.append(finding("nmap", f"Open port {pid}/{proto}: {svc_text or 'unknown service'}",
-                                "Informational", target_url, f"host={host}"))
+                                "Informational", f"{host}:{pid}", f"scanned host={host}"))
     return findings

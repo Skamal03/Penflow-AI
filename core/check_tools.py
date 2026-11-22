@@ -1,5 +1,7 @@
-"""Run from core/:  python check_tools.py
-Shows which tools are installed in your WSL Kali and whether ZAP is reachable."""
+"""Run from core/:  python check_tools.py [--llm]
+Shows which tools are installed in your WSL Kali, whether ZAP is reachable,
+and (with --llm) whether the AI model answers."""
+import sys
 import requests
 from agent import react_loop  # noqa: F401 (registers every tool)
 from tools.tool_registry import list_tools
@@ -18,3 +20,10 @@ try:
     print(f"\nZAP API: reachable (version {v.get('version')})")
 except Exception as e:
     print(f"\nZAP API: NOT reachable at {ZAP_API} -> run scripts/start_zap.sh ({e.__class__.__name__})")
+
+if "--llm" in sys.argv:
+    from agent.llm_client import ask, LLMError, MODEL
+    try:
+        print(f"LLM ({MODEL}): OK -> {ask([{'role': 'user', 'content': 'Reply with the single word OK'}]).strip()[:40]}")
+    except LLMError as e:
+        print(f"LLM ({MODEL}): FAILED -> {e}")
