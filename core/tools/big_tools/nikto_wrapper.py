@@ -1,27 +1,26 @@
-import os
-import subprocess
 import json
 from tools.tool_registry import register
+from tools.shell import run_with_output_file, finding, is_dry_run, ToolError
 
-@register("nikto")
-def run(target_url: str) -> list[dict]:
-    if os.environ.get("DRY_RUN") == "true":
+
+@register("nikto", phase="vulnerability_assessment", binary="nikto", active=True,
+          description="Web server misconfiguration and outdated component checks")
+def run(target_url: str, tuning: str = "x6", timeout: int = 300) -> list[dict]:
+    if is_dry_run():
         return [
-            {"tool": "nikto", "name": "Server leaks Apache version via header", "risk": "Low", "url": target_url, "evidence": "fake dry-run data"},
-            {"tool": "nikto", "name": "Outdated jQuery version detected", "risk": "Medium", "url": target_url, "evidence": "fake dry-run data"},
+            finding("nikto", "Server leaks Apache version via header", "Low", target_url, "fake dry-run data"),
+            finding("nikto", "Outdated jQuery version detected", "Medium", target_url, "fake dry-run data"),
         ]
+
+    raw = run_with_output_file(
+        lambda path: ["nikto", "-h", target_url, "-Tuning", tuning, "-Format", "json",
+                      "-output", path, "-timeout", "10", "-ask", "no"],
+        suffix=".json", timeout=timeout)
     try:
-        # Requires nikto installed and on PATH. -Format json requires a -output file.
-        result = subprocess.run(
-            ["nikto", "-h", target_url, "-Format", "json", "-output", "nikto_result.json"],
-            capture_output=True, text=True, timeout=300
-        )
-        with open("nikto_result.json") as f:
-            data = json.load(f)
-        findings = []
-        for vuln in data.get("vulnerabilities", []):
-            findings.append({"tool": "nikto", "name": vuln.get("msg", "Unknown finding"), "risk": "Medium", "url": target_url, "evidence": vuln.get("url", "")})
-        return findings
-    except Exception as e:
-        return [{"tool": "nikto", "name": f"Scan failed: {e}", "risk": "Low", "url": target_url, "evidence": ""}]
-    
+        data = json.loads(raw)
+    except ValueError as e:
+        raise ToolError(f"could not parse nikto output: {e}")
+
+    entries = data if isinstance(data, list) else [data]
+    vulns = [v for e in entries for v in e.get("vulnerabilities", [])]
+    return [finding("nikto", v.get("msg", "Unknown finding"), "Medium", target_url, v.get("url", "")) for v in vulns]

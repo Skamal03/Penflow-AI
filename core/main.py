@@ -1,6 +1,8 @@
 import argparse
-import os
 import json
+import os
+import sys
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -12,8 +14,14 @@ def main():
         os.environ["DRY_RUN"] = "true"
 
     from agent.react_loop import run  # import AFTER setting DRY_RUN
-    findings = run(args.target)
+    from tools.tool_registry import ScopeError
+    try:
+        findings = run(args.target)
+    except ScopeError as e:
+        print(f"SCOPE BLOCKED: {e}", file=sys.stderr)
+        sys.exit(2)
     print(json.dumps(findings, indent=2))
+
 
 if __name__ == "__main__":
     main()
