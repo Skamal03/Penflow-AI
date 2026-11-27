@@ -1,0 +1,107 @@
+{
+  "target": "http://127.0.0.1:3000",
+  "run_status": {
+    "whatweb": {"status": "ok", "count": 2, "detail": ""},
+    "wafw00f": {"status": "ok", "count": 1, "detail": ""},
+    "nmap": {"status": "ok", "count": 1, "detail": ""},
+    "ffuf": {"status": "ok", "count": 3, "detail": ""},
+    "header_checks": {"status": "ok", "count": 2, "detail": ""},
+    "nuclei": {"status": "ok", "count": 2, "detail": ""},
+    "zap": {"status": "ok", "count": 2, "detail": ""},
+    "nikto": {"status": "not installed", "count": 0, "detail": "'nikto' not found (run scripts/setup_kali_tools.sh)"},
+    "sqlmap": {"status": "skipped", "count": 0, "detail": "Tool 'sqlmap' is disabled (enable it with PENFLOW_ENABLED_TOOLS=sqlmap)"}
+  },
+  "findings": [
+    {
+      "tool": "zap",
+      "name": "SQL injection in product search",
+      "risk": "Critical",
+      "url": "http://127.0.0.1:3000/rest/products/search?q=test",
+      "evidence": "Payload ')) UNION SELECT id,email,password FROM Users-- returned 5 rows where 1 was expected."
+    },
+    {
+      "tool": "zap",
+      "name": "Cross-site scripting in search box",
+      "risk": "High",
+      "url": "http://127.0.0.1:3000/#/search?q=%3Cscript%3Ealert(1)%3C/script%3E",
+      "evidence": "<script>alert(document.cookie)</script> was reflected unencoded in the results page."
+    },
+    {
+      "tool": "nuclei",
+      "name": "Outdated jQuery version detected",
+      "risk": "Medium",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "jquery-2.2.4.min.js matched CVE-2020-11022 (prototype pollution in jQuery before 3.5.0)."
+    },
+    {
+      "tool": "header_checks",
+      "name": "Missing Content-Security-Policy header",
+      "risk": "Medium",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "Response headers did not include Content-Security-Policy."
+    },
+    {
+      "tool": "header_checks",
+      "name": "Missing X-Frame-Options header",
+      "risk": "Medium",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "Response headers did not include X-Frame-Options or a frame-ancestors directive."
+    },
+    {
+      "tool": "header_checks",
+      "name": "Session cookie without HttpOnly flag",
+      "risk": "Low",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "Set-Cookie: connect.sid=...; Path=/ (no HttpOnly, no SameSite)."
+    },
+    {
+      "tool": "ffuf",
+      "name": "Sensitive path exposed: /ftp",
+      "risk": "High",
+      "url": "http://127.0.0.1:3000/ftp",
+      "evidence": "HTTP 200, directory listing enabled, file achat.md and package.json exposed."
+    },
+    {
+      "tool": "ffuf",
+      "name": "Sensitive path exposed: /ftp",
+      "risk": "High",
+      "url": "http://127.0.0.1:3000/ftp/quarantine",
+      "evidence": "HTTP 200, directory listing enabled."
+    },
+    {
+      "tool": "ffuf",
+      "name": "Backup file exposed: /package.json",
+      "risk": "Low",
+      "url": "http://127.0.0.1:3000/package.json",
+      "evidence": "HTTP 200, application manifest served with dependency versions."
+    },
+    {
+      "tool": "nmap",
+      "name": "Open port 3000 (http)",
+      "risk": "Informational",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "3000/tcp open  http    Node.js Express framework"
+    },
+    {
+      "tool": "wafw00f",
+      "name": "No web application firewall detected",
+      "risk": "Low",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "No WAF signature matched after 3 probes."
+    },
+    {
+      "tool": "whatweb",
+      "name": "Technology detected: Express",
+      "risk": "Informational",
+      "url": "http://127.0.0.1:3000",
+      "evidence": "X-Powered-By: Express; server banner Express."
+    },
+    {
+      "tool": "whatweb",
+      "name": "Technology detected: Express",
+      "risk": "Informational",
+      "url": "http://127.0.0.1:3000/rest/products",
+      "evidence": "X-Powered-By: Express"
+    }
+  ]
+}

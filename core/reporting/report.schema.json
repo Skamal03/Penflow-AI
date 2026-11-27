@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://penflow.local/schemas/report-1.0.json",
+  "title": "PenflowAI scan report",
+  "description": "Source of truth for one scan. Written by core/reporting. Numeric risk scoring (risk_score) is filled later by the RandomForest Risk Scorer, never by the AI writer.",
+  "type": "object",
+  "required": [
+    "schema_version", "run_id", "generated_at", "target", "started_at", "finished_at",
+    "duration_seconds", "owner", "ai", "overall", "severity_scale", "counts",
+    "executive_summary", "tools", "coverage_note", "findings"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "run_id": {"type": "string", "description": "UTC timestamp, unique per scan directory"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "target": {"type": "string"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "duration_seconds": {"type": "integer", "minimum": 0},
+    "owner": {
+      "type": "object",
+      "description": "Reserved link to the database. Null until the engine writes to Postgres.",
+      "properties": {
+        "user_id": {"type": ["string", "integer", "null"]},
+        "roe_id": {"type": ["string", "integer", "null"]}
+      },
+      "required": ["user_id", "roe_id"],
+      "additionalProperties": false
+    },
+    "ai": {
+      "type": "object",
+      "properties": {
+        "used": {"type": "boolean"},
+        "model": {"type": ["string", "null"]},
+        "calls": {"type": "integer", "minimum": 0},
+        "fallback_used": {"type": "boolean"}
+      },
+      "required": ["used", "model", "calls", "fallback_used"],
+      "additionalProperties": false
+    },
+    "overall": {
+      "type": "object",
+      "description": "Highest severity present, computed in code.",
+      "properties": {
+        "severity": {"enum": ["Critical", "High", "Medium", "Low", "Informational", "none"]},
+        "label": {"type": "string"},
+        "key": {"enum": ["critical", "high", "medium", "low", "informational", "none"]},
+        "rank": {"type": ["integer", "null"], "minimum": 0, "maximum": 4},
+        "colour": {"type": "string"},
+        "icon": {"type": "string"},
+        "meaning": {"type": "string"},
+        "fix": {"type": "string"}
+      },
+      "required": ["severity", "label", "key", "rank", "colour", "icon"],
+      "additionalProperties": true
+    },
+    "severity_scale": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "description": "Defined once in reporting/schema.py; the HTML, Markdown and frontend reuse it.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"enum": ["critical", "high", "medium", "low", "informational"]},
+          "label": {"type": "string"},
+          "rank": {"type": "integer", "minimum": 0, "maximum": 4},
+          "colour": {"type": "string"},
+          "icon": {"type": "string"},
+          "meaning": {"type": "string"},
+          "fix": {"type": "string"}
+        },
+        "required": ["key", "label", "rank", "colour", "icon", "meaning", "fix"],
+        "additionalProperties": false
+      }
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "critical": {"type": "integer", "minimum": 0},
+        "high": {"type": "integer", "minimum": 0},
+        "medium": {"type": "integer", "minimum": 0},
+        "low": {"type": "integer", "minimum": 0},
+        "informational": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0}
+      },
+      "required": ["critical", "high", "medium", "low", "informational", "total"],
+      "additionalProperties": false
+    },
+    "executive_summary": {"type": "string"},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "status": {"type": "string"},
+          "count": {"type": "integer", "minimum": 0},
+          "detail": {"type": "string"}
+        },
+        "required": ["name", "status", "count", "detail"],
+        "additionalProperties": false
+      }
+    },
+    "coverage_note": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "description": "sha256(tool|name|url)[:12]"},
+          "name": {"type": "string"},
+          "tool": {"type": "string"},
+          "url": {"type": "string"},
+          "severity": {"enum": ["Critical", "High", "Medium", "Low", "Informational"]},
+          "severity_key": {"enum": ["critical", "high", "medium", "low", "informational"]},
+          "severity_rank": {"type": "integer", "minimum": 0, "maximum": 4},
+          "evidence": {"type": "string", "maxLength": 600},
+          "summary": {"type": "string", "description": "Plain English, max 30 words"},
+          "mitigation": {"type": "string", "description": "Plain English fix steps, max 40 words"},
+          "technical_note": {"type": "string", "description": "Max 25 words"},
+          "text_source": {"enum": ["ai", "cache", "fallback"]},
+          "risk_score": {"type": ["number", "null"], "description": "Reserved for the Risk Scorer"},
+          "cve": {"type": "array", "items": {"type": "string"}},
+          "kev": {"type": ["boolean", "null"]},
+          "owasp": {"type": ["string", "null"]}
+        },
+        "required": [
+          "id", "name", "tool", "url", "severity", "severity_key", "severity_rank",
+          "evidence", "summary", "mitigation", "technical_note", "text_source",
+          "risk_score", "cve", "kev", "owasp"
+        ],
+        "additionalProperties": true
+      }
+    }
+  }
+}

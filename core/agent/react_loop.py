@@ -1,5 +1,4 @@
 import sys
-from agent.llm_client import ask, LLMError
 from tools.tool_registry import run_tool, check_scope, TOOLS, ScopeError
 from tools.shell import ToolError, ToolSkipped
 from logging_system.action_logger import log_action
@@ -17,8 +16,6 @@ TOOL_ORDER = [
     "header_checks", "nuclei", "zap", "nikto",  # vulnerability assessment
     "sqlmap",                                # validation (disabled by default)
 ]
-
-SUMMARISE_RISKS = {"medium", "high", "critical"}
 
 # What happened to each tool in the last run: used by the report.
 # {tool: {"status": "ok|skipped|not installed|error|crash", "count": n, "detail": "..."}}
@@ -38,7 +35,6 @@ def run(target_url: str, only: list[str] | None = None) -> list[dict]:
     check_scope(target_url)  # wrong target -> ScopeError before anything runs
     RUN_STATUS.clear()
     all_findings: list[dict] = []
-    llm_ok = True
 
     for tool_name in [t for t in TOOL_ORDER if only is None or t in only]:
         if tool_name not in TOOLS:
@@ -78,16 +74,8 @@ def run(target_url: str, only: list[str] | None = None) -> list[dict]:
         _say(f"    {len(findings)} finding(s)")
 
         for f in findings:
+            # Plain names only: the reporting module owns all AI-written text,
+            # so a scan never spends tokens per finding.
             f["summary"] = f["name"]
-            if llm_ok and f["risk"].lower() in SUMMARISE_RISKS:
-                prompt = [{"role": "user", "content":
-                           f"Summarize this security finding in one plain-language sentence for a non-technical reader: {f}"}]
-                try:
-                    f["summary"] = ask(prompt)
-                    log_action("ai_summary", tool_name, f["summary"])
-                except LLMError as e:
-                    llm_ok = False  # don't hammer a broken LLM for every finding
-                    log_action("ai_summary_failed", tool_name, str(e))
-                    _say(f"    LLM unavailable, using plain names as summaries: {e}")
         all_findings.extend(findings)
     return all_findings
