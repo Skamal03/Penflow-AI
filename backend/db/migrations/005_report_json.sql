@@ -1,0 +1,2 @@
+ALTER TABLE reports ADD COLUMN report_json JSONB;
+ALTER TABLE findings ALTER COLUMN risk_score DROP NOT NULL;

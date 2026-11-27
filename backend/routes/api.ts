@@ -431,7 +431,7 @@ router.get('/reports', requireRole('requester'), route(async (req, res) => {
 }));
 
 router.get('/reports/:id', requireRole('requester'), route(async (req, res) => {
-  const report = await one('SELECT * FROM reports WHERE id = $1 AND owner_id = $2', [req.params.id, req.user!.id]);
+  const report = await one('SELECT id, run_id, owner_id, markdown, generated_at, report_json FROM reports WHERE id = $1 AND owner_id = $2', [req.params.id, req.user!.id]);
   if (!report) { res.sendStatus(404); return; }
   res.json({ report });
 }));

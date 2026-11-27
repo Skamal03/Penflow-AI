@@ -52,7 +52,7 @@ export type Finding = {
   title: string;
   component: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
-  risk_score: number;
+  risk_score: number | null;
   score_rationale: string;
   cve_id: string | null;
   actively_exploited: number;

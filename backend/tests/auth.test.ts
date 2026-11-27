@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import bcrypt from 'bcryptjs';
+import { createHmac, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -165,6 +169,100 @@ test('another user\'s run returns 404 instead of 403', async () => {
   const run = await db.one<{ id: string }>('SELECT r.id FROM runs r JOIN users u ON u.id = r.owner_id WHERE u.email = $1 ORDER BY r.started_at', ['requester@penflow.test']);
   assert.ok(run);
   assert.equal((await client.request(`/api/runs/${run.id}`)).status, 404);
+});
+
+test('engine reports are ingested for their run owner only', async () => {
+  const userA = randomUUID();
+  const userB = randomUUID();
+  const roeId = randomUUID();
+  const runId = randomUUID();
+  const reportsDir = await mkdtemp(join(tmpdir(), 'penflow-report-ingest-'));
+  const reportFolderName = '20261128T025000Z';
+  const reportFolder = join(reportsDir, reportFolderName);
+  const previousReportsDir = process.env.PENFLOW_REPORTS_DIR;
+  const reportJson = {
+    schema_version: '1.0',
+    run_id: reportFolderName,
+    generated_at: '2026-11-28T02:50:00Z',
+    target: 'http://127.0.0.1:3000',
+    owner: { user_id: 'untrusted-user', roe_id: 'untrusted-roe' },
+    findings: [{
+      id: 'abc123def456',
+      name: 'Missing security header',
+      tool: 'header_checks',
+      url: 'http://127.0.0.1:3000',
+      severity: 'Medium',
+      severity_key: 'medium',
+      evidence: 'The header was absent.',
+      summary: 'The response is missing a browser security header.',
+      technical_note: 'Configure the response header.',
+      risk_score: null,
+      cve: [],
+      kev: null,
+    }],
+  };
+
+  try {
+    process.env.PENFLOW_REPORTS_DIR = reportsDir;
+    await mkdir(reportFolder);
+    await writeFile(join(reportFolder, 'report.json'), JSON.stringify(reportJson));
+    await writeFile(join(reportFolder, 'report.md'), '# Test report\n');
+
+    const passwordHash = bcrypt.hashSync(demoPassword, 4);
+    const insertUser = `INSERT INTO users
+      (id, email, password_hash, display_name, account_type, role, email_verified, plan_id, created_at, email_verified_at)
+      VALUES ($1, $2, $3, $4, 'test', 'requester', TRUE, 'free', NOW(), NOW())`;
+    await db.run(insertUser, [userA, `${userA}@penflow.test`, passwordHash, 'Report Owner A']);
+    await db.run(insertUser, [userB, `${userB}@penflow.test`, passwordHash, 'Report Owner B']);
+    await db.run(`INSERT INTO roe_documents
+      (id, owner_id, file_name, target_ids_json, scope_json, attestation, status, automated_decision, reasons_json, uploaded_at)
+      VALUES ($1, $2, 'test.pdf', '[]', '[]', TRUE, 'approved', 'passed', '[]', NOW())`, [roeId, userA]);
+    await db.run(`INSERT INTO runs
+      (id, owner_id, roe_id, status, stage, started_at, scope_json)
+      VALUES ($1, $2, $3, 'complete', 'verify', NOW(), '[]')`, [runId, userA, roeId]);
+
+    const { ingestReport } = await import('../reporting/ingest-report.js');
+    await assert.rejects(() => ingestReport('not-a-uuid', reportFolderName), /runId must be a UUID/);
+    await assert.rejects(() => ingestReport(runId, '../outside'), /reportFolderName contains invalid characters/);
+    const ingested = await ingestReport(runId, reportFolderName);
+    const repeatedIngestion = await ingestReport(runId, reportFolderName);
+    assert.equal(repeatedIngestion.id, ingested.id);
+    const stored = await db.one<{ owner_id: string; report_json: typeof reportJson }>(
+      'SELECT owner_id, report_json FROM reports WHERE id = $1',
+      [ingested.id],
+    );
+    assert.equal(stored?.owner_id, userA);
+    assert.equal(stored?.report_json.owner.user_id, userA);
+    assert.equal(stored?.report_json.owner.roe_id, roeId);
+    assert.equal(await db.one<{ count: number }>('SELECT COUNT(*)::int AS count FROM findings WHERE run_id = $1', [runId]).then((row) => row?.count), 1);
+    assert.equal(await db.one<{ risk_score: number | null }>('SELECT risk_score FROM findings WHERE run_id = $1', [runId]).then((row) => row?.risk_score), null);
+
+    const clientA = new Client();
+    const clientB = new Client();
+    assert.equal((await clientA.login(`${userA}@penflow.test`, demoPassword)).status, 200);
+    assert.equal((await clientB.login(`${userB}@penflow.test`, demoPassword)).status, 200);
+
+    const ownerReport = await clientA.request(`/api/reports/${ingested.id}`);
+    assert.equal(ownerReport.status, 200);
+    assert.equal((await ownerReport.json() as { report: { report_json: typeof reportJson } }).report.report_json.run_id, reportFolderName);
+    assert.equal((await clientB.request(`/api/reports/${ingested.id}`)).status, 404);
+    assert.equal((await clientB.request(`/api/runs/${runId}`)).status, 404);
+    assert.equal((await clientB.request(`/api/runs/${runId}/findings`)).status, 404);
+
+    const ownerReports = await clientA.request('/api/reports');
+    const otherReports = await clientB.request('/api/reports');
+    const ownerReportList = await ownerReports.json() as { reports: Array<{ id: string; generated_at: string }> };
+    assert.ok(ownerReportList.reports.some((report) => report.id === ingested.id && report.generated_at === new Date(reportJson.generated_at).toISOString()));
+    assert.ok(!(await otherReports.json() as { reports: Array<{ id: string }> }).reports.some((report) => report.id === ingested.id));
+    const dashboard = await clientA.request('/api/dashboard');
+    assert.equal(dashboard.status, 200);
+    assert.ok((await dashboard.json() as { reports: Array<{ id: string }> }).reports.some((report) => report.id === ingested.id));
+  } finally {
+    if (previousReportsDir === undefined) delete process.env.PENFLOW_REPORTS_DIR;
+    else process.env.PENFLOW_REPORTS_DIR = previousReportsDir;
+    await db.run('DELETE FROM users WHERE id = ANY($1::uuid[])', [[userA, userB]]);
+    await rm(reportsDir, { recursive: true, force: true });
+  }
 });
 
 test('a password longer than 72 bytes is rejected', async () => {

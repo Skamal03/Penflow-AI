@@ -225,7 +225,10 @@ export function StageTracker({ current }: { current: string }) {
   </ol>;
 }
 
-export function RiskScore({ score }: { score: number }) {
+export function RiskScore({ score }: { score: number | null }) {
+  if (score === null) {
+    return <div className="risk-score"><strong>Not scored</strong><span className="sr-only">Risk score not available</span></div>;
+  }
   return <div className="risk-score"><strong>{score}</strong><span className="risk-track" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(score, 100))}%` }} /></span><span className="sr-only">Risk score {score} out of 100</span></div>;
 }
 

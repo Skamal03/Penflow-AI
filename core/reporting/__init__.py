@@ -74,14 +74,20 @@ def _render_all(report: dict, out_dir: str) -> dict:
 
 
 def generate_report(target, findings, run_status=None, started=None, finished=None,
-                    use_ai=True, owner=None, refresh_ai=False) -> dict:
+                    use_ai=True, owner=None, refresh_ai=False, run_id=None) -> dict:
     """Build report.json first, then (optionally) add AI text, then render."""
     started = started or datetime.now(timezone.utc)
     finished = finished or datetime.now(timezone.utc)
 
     report = build_report(target, findings, run_status, started, finished, owner=owner)
-    out_dir = _unique_dir(reports_dir(), report["run_id"])
-    report["run_id"] = os.path.basename(out_dir)
+    if run_id:
+        import uuid
+        run_id = str(uuid.UUID(run_id))  # defense in depth: must be a valid UUID
+        out_dir = os.path.join(reports_dir(), run_id)  # exact name, no suffix
+        report["run_id"] = run_id
+    else:
+        out_dir = _unique_dir(reports_dir(), report["run_id"])
+        report["run_id"] = os.path.basename(out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     # Facts on disk before any network call: a crash never loses the scan.

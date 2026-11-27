@@ -4,7 +4,7 @@
 > Read it before making any changes. Update the STATUS section after every finished subtask.
 
 ---
-Report module: Phase 1 (`core/reporting/`) built and committed as `078adf6`; 85/85 test checks green on Python 3.15.2 (re-verified Nov 2026). Phase 2 frontend page built (`08eadab`); Phase 3 documented only, not built.
+Report module: Phase 1 (`core/reporting/`) built and committed as `078adf6`; 85/85 test checks green on Python 3.15.2 (re-verified Nov 2026). Phase 2 frontend page built (`08eadab`). Phase 3 backend ingestion is partially implemented; the engine caller remains intentionally unwired.
 
 ## 1. Project Overview
 
@@ -403,7 +403,7 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 - **DONE**: package, schema, builder, AI writer + cache + fallback, standalone HTML (cover, exec summary, severity bar with overall marker, filter chips, Simple/Technical toggle, `<details>` cards, auto-text badge, tool table, AI disclaimer, print CSS), Markdown, CLI flags, `--report-from`, `react_loop.py` per-finding LLM removed, tests (85 checks green).
 - **DONE (Phase 2)**: frontend Report page at `/app/reports/engine` — `web/frontend/src/pages/ReportPage.tsx`, typed mirror in `src/lib/reportTypes.ts`, mock data `src/data/sample-report.json` + `sample-report.ts`, styles `.rp-*` appended to `src/styles/global.css` (dark theme + print overrides). "Download PDF" = `window.print()`; `beforeprint` opens every card. Re-verified Nov 2026: `npx tsc --noEmit` and `npx vite build` both exit 0, and the mock JSON contains every field `reportTypes.ScanReport` declares. Route is wrapped in `<RoleGate roles={['requester']}>` in `router.tsx`.
 - **Phase 1 files (all done, in build order)**: `schema.py` (severity scale, stable ids, `REPORTS_DIR`) → `builder.py` (all facts: counts, durations, tool table, overall, `coverage_note`) → `render_html.py` (self-contained HTML, filter chips, Simple/Technical toggle, print CSS) → `ai_writer.py` (issue-type batching, hard call cap, cache, fallback dict) → `render_md.py` (Markdown from the same data) → `main.py` / `react_loop.py` / `llm_client.py` edits (`--no-ai`, `--refresh-ai`, `--report-from`; per-finding LLM call removed, `f["summary"] = f["name"]`; `ask()` gained `max_tokens` / `temperature` / `reasoning_effort` with unchanged defaults) → `test_reporting.py` (85 plain asserts, green). `core/report.py` is a thin shim.
-- **NEXT (Phase 3)**: backend JSONB persistence + endpoints as described above (documented, not built).
+- **PARTIAL (Phase 3)**: backend JSONB persistence and `ingestReport(runId, reportFolderName)` are implemented. The engine caller remains unwired; the planned `/api/run-reports` endpoints and engine report-page API wiring are not built.
 - **Known issues**: `header_checks` still makes a real HTTP request in `--dry-run` (pre-existing, it is a pure-Python tool); AI text is English-only; the AI executive summary is cached by payload hash, so changing counts invalidates it by design; the frontend report page still uses mock data.
 
 ### Progress log
@@ -464,7 +464,7 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 
 ### Next Task
 
-Report module Phase 3: backend JSONB persistence + `/api/run-reports` endpoints, then point the frontend report page at them (plan in section 6A). Otherwise, owner decides.
+Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts` with the database run UUID and timestamp-named report folder. No completion endpoint or automatic caller is currently wired.
 
 ### Known Issues
 
@@ -476,6 +476,11 @@ Report module Phase 3: backend JSONB persistence + `/api/run-reports` endpoints,
 - **ZAP with Juice Shop (SPA)**: `zap_wrapper.py` notes that the classic ZAP spider can't crawl single-page apps like Juice Shop — the AJAX spider would be needed.
 - **Frontend visual bugs**: mentioned as a backlog item but specific bugs are not documented in code.
 - **ReAct loop uses a fixed tool order**: `TOOL_ORDER` in `react_loop.py` is a hardcoded list. The LLM does not choose which tools to run or in what order (it only writes report text now).
+- **Report ingestion is not invoked automatically**: `ingestReport(runId, reportFolderName)` persists report JSON and findings for the run owner, but is intentionally not called until an engine/orchestrator caller is added.
+
+### Progress log
+
+- 2026-11-28 — Added backend report JSON persistence and owner-derived ingestion, fixed report-list timestamps, returned JSONB in the owner-filtered report endpoint, and added cross-user ingestion tests. The ingestion function is intentionally not wired to a completion endpoint or core code. Files: `backend/db/migrations/005_report_json.sql`, `backend/db/index.ts`, `backend/reporting/ingest-report.ts`, `backend/routes/api.ts`, `backend/tests/auth.test.ts`, `web/frontend/src/lib/types.ts`, `web/frontend/src/components/ui.tsx`, `AGENTS.md`. Next: connect the engine caller with both the DB UUID and timestamp folder name.
 
 ---
 
