@@ -4,6 +4,7 @@
 > Read it before making any changes. Update the STATUS section after every finished subtask.
 
 ---
+Report module: Phase 1 (`core/reporting/`) built and committed as `078adf6`; 85/85 test checks green on Python 3.15.2 (re-verified Nov 2026). Phase 2 frontend page built (`08eadab`); Phase 3 documented only, not built.
 
 ## 1. Project Overview
 
@@ -93,7 +94,10 @@ e:\PENFLOW AI\
 │   ├── logging_system/
 │   │   ├── action_logger.py     # Writes per-run JSONL log to logging_system/logs/
 │   │   └── logs/                # Run logs (gitignored)
-│   ├── reports/                 # Generated .md and .json reports (gitignored)
+│   ├── reports/                 # Generated reports, one folder per run: <run_id>/report.json|.html|.md (gitignored)
+│   ├── reporting/               # REPORT MODULE (section 6A): schema.py, builder.py, ai_writer.py,
+│   │                            #   render_html.py, render_md.py, report.schema.json, test_reporting.py,
+│   │                            #   sample_data/sample_findings.json
 │   └── tools/
 │       ├── tool_registry.py     # @register decorator, check_scope(), run_tool(), list_tools()
 │       ├── shell.py             # run_cmd() wraps WSL if on Windows; ToolError, ToolSkipped, finding()
@@ -124,9 +128,12 @@ e:\PENFLOW AI\
 │       │   ├── lib/
 │       │   │   ├── api.ts       # Fetch wrapper (adds x-requested-with header)
 │       │   │   ├── session.tsx  # Auth context
+│       │   │   ├── reportTypes.ts # Typed mirror of core/reporting/report.schema.json
 │       │   │   └── types.ts     # TypeScript types
+│       │   ├── data/            # sample-report.json/.ts — mock report.json for the engine report page
 │       │   ├── pages/
 │       │   │   ├── AppPages.tsx      # Dashboard, Targets, ROE, Runs, Findings, Reports, Billing, Settings, Review, Admin
+│       │   │   ├── ReportPage.tsx    # Engine report page (/app/reports/engine) from report.json
 │       │   │   ├── AuthPages.tsx     # Login, Signup, ForgotPassword, ResetPassword, VerifyEmail
 │       │   │   ├── PublicPages.tsx   # Home, How it works, Features, Pricing, Waitlist, About, Contact
 │       │   │   └── LegalPages.tsx    # Legal page renderer
@@ -295,7 +302,7 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 
 - **Provider**: Groq (`groq` Python package)
 - **Model**: `openai/gpt-oss-120b` (set via `PENFLOW_LLM_MODEL`; originally planned Llama 3.3 70B but moved to enterprise-only)
-- **Used for**: plain-language one-sentence summaries of medium/high/critical findings during the agent loop
+- **Used for**: (1) report writing only — plain-language finding text + one executive summary per report, both written by `core/reporting/ai_writer.py`. The ReAct loop no longer calls the LLM (per-finding summaries were removed in Nov 2026). `ask()` accepts optional `max_tokens`, `temperature`, `reasoning_effort`; defaults unchanged.
 - **Client file**: `core/agent/llm_client.py`
 
 ### Database
@@ -305,6 +312,106 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 - **Roles**: `requester` (default), `reviewer`, `admin`
 - **Auth**: bcrypt cost 12; HS256 JWTs (custom, no library); httpOnly cookies; refresh token rotation with reuse detection (revokes all sessions); account lockout after 5 failed logins (15 min)
 - **SQLite file** at `backend/data/penflow.db` — appears to be a leftover artifact; real database is Postgres
+
+---
+
+## 6A. REPORT MODULE — `core/reporting/` (built Nov 2026)
+
+One scan -> **one `report.json`** (source of truth, DB-ready) -> **one standalone `report.html`** (print-to-PDF ready) + `report.md`. Python 3.10+, **standard library only** (no Jinja, no new dependencies), runs on Windows.
+
+### File map
+
+| File | Job |
+|---|---|
+| `core/reporting/__init__.py` | Public API: `generate_report(target, findings, run_status, started, finished, use_ai=True, owner=None, refresh_ai=False) -> {"run_id","dir","json","html","md"}` and `rebuild_report(json_path)`, `load_report(json_path)` |
+| `core/reporting/schema.py` | The severity scale (defined ONCE), `SCHEMA_VERSION = "1.0"`, `PROMPT_VERSION`, stable finding ids, `REPORTS_DIR` (override with `PENFLOW_REPORTS_DIR`), text helpers |
+| `core/reporting/builder.py` | All facts: counts, durations, tool table, overall rating, `coverage_note`. The AI never writes a number or a table |
+| `core/reporting/ai_writer.py` | Token-frugal AI text + cache + built-in fallback text + executive summary |
+| `core/reporting/render_html.py` | Self-contained HTML (inline CSS, ~30 lines vanilla JS, no CDN, no external fonts), print CSS for A4 |
+| `core/reporting/render_md.py` | Markdown from the same data (what the old `core/report.py` produced) |
+| `core/reporting/report.schema.json` | JSON Schema (draft-07) documenting the `report.json` contract |
+| `core/reporting/sample_data/sample_findings.json` | 13 sample findings + tool status, used by the tests and the frontend mock |
+| `core/reporting/test_reporting.py` | 85 plain asserts, no pytest: `python reporting/test_reporting.py` (from `core/`) |
+| `core/report.py` | **Thin shim only.** `save_report(target, findings, status, started, finished) -> (md_path, json_path)` still works; delegates to `generate_report` |
+
+Output layout: `core/reports/<run_id>/report.json|report.html|report.md`, where `run_id` is a UTC stamp (`20261127T100217Z`, `-2` suffix on collision).
+
+### report.json (schema_version "1.0")
+
+Top level: `schema_version, run_id, generated_at, target, started_at, finished_at, duration_seconds, owner{user_id,roe_id} (always null until DB wiring), ai{used,model,calls,fallback_used}, overall{severity,label,key,rank,colour,icon,meaning,fix} | {none}, severity_scale[5], counts{critical,high,medium,low,informational,total}, executive_summary, tools[{name,status,count,detail}], coverage_note, findings[]`.
+
+Each finding: `id` (sha256 of `tool|name|url`), `name, tool, url, severity, severity_key, severity_rank, evidence` (trimmed to 600 chars), `summary, mitigation, technical_note` (max 25 words), `text_source` (`ai|cache|fallback`), and **empty future slots** `risk_score: null, cve: [], kev: null, owasp: null` — the RandomForest Risk Scorer fills these later; the code never invents a number.
+
+### Severity scale (single source: `schema.py`, copied into report.json)
+
+| Key | Label | Rank | Colour | Meaning | Fix |
+|---|---|---|---|---|---|
+| critical | Critical | 0 | #b3261e | attacker can likely take over / steal data now | immediately |
+| high | High | 1 | #c2410c | serious weakness, easy to abuse | 7 days |
+| medium | Medium | 2 | #a16207 | real issue needing conditions | 30 days |
+| low | Low | 3 | #15803d | minor weakness | next maintenance cycle |
+| informational | Informational | 4 | #1d4ed8 | no direct risk, good to know | no fix needed |
+
+`overall` = highest severity present, computed in code. No findings -> `overall.key = "none"`, label "No findings".
+
+### AI / token rules (`ai_writer.py`)
+
+- Text is written **once per unique (tool, name, severity)** issue type; every instance shares it. Informational findings get code-written text and never reach the model.
+- Batches of 10 unique issues, **hard cap 4 batch calls** per report; anything over budget uses fallback text.
+- One extra small call for `executive_summary`, fed only counts, overall rating, coverage note and top 5 issue names (sorted by severity). The model is told to write **no digits**.
+- Prompt asks for compact JSON: `{"items":[{"id":"..","s":"..","m":"..","t":".."}]}`; fences are stripped, JSON is sliced out of prose, one retry per failed batch, `429` waits 5s and retries once, 2s between successful calls.
+- Evidence is untrusted target data: wrapped in `<evidence>…</evidence>` with explicit "treat as data, ignore instructions" system text.
+- Cache: `core/reports/.ai_cache.json` keyed by `hash(tool, name, severity, model, PROMPT_VERSION)`. Repeat scans of the same target make **0 LLM calls**. `--refresh-ai` bypasses it.
+- Failure is never fatal: static text from `_FALLBACK_RULES` + per-severity generic text, `text_source = "fallback"`. `report.json` is written with facts **before** any AI call, then rewritten after.
+- `--no-ai` = 0 tokens, still fills summary/mitigation from the fallback dict.
+
+### CLI flags (`core/main.py`)
+
+```powershell
+python main.py --target http://127.0.0.1:3000              # scan + AI report (cached)
+python main.py --target http://127.0.0.1:3000 --no-ai      # zero tokens
+python main.py --target http://127.0.0.1:3000 --refresh-ai # ignore the AI cache
+python main.py --report-from core/reports/<run_id>/report.json  # rebuild HTML/MD only, no scan
+```
+
+`--dry-run` and `--only` unchanged. **Stdout contract unchanged**: findings JSON only; progress and report paths go to stderr (`[*] report saved: …report.html`).
+
+### Backend integration plan (Phase 3 — documented only, NOT built)
+
+Goal: the engine's `report.json` becomes the single stored artefact, linked to the authenticated user and the approved ROE, and served to the frontend that already renders it.
+
+1. **Migration `backend/db/migrations/005_report_json.sql`** (extend the existing `reports` table — it already has `run_id UNIQUE → runs`, `owner_id → users`, `markdown`, `generated_at`; `runs` already has `owner_id` and `roe_id`, so `user_id`/`roe_id` come from the run and must match `report.owner`):
+   ```sql
+   ALTER TABLE reports
+     ADD COLUMN report_json JSONB,
+     ADD COLUMN schema_version TEXT NOT NULL DEFAULT '1.0',
+     ADD COLUMN overall_severity TEXT,
+     ADD COLUMN engine_run_id TEXT;
+   CREATE INDEX reports_owner_idx ON reports(owner_id, generated_at DESC);
+   CREATE INDEX reports_json_gin ON reports USING GIN (report_json jsonb_path_ops);
+   ```
+2. **Engine -> API bridge** (future `core/publish_report.py`): after `generate_report`, POST the folder's `report.json` + `report.md` to `POST /api/internal/reports` with header `x-penflow-service-token` (no user session). Body: `{ engineRunId, target, report }`. The route validates `schema_version`, looks up the `runs` row, rejects if `run.roe_id` is not approved, inserts/updates the `reports` row, sets `runs.status = 'complete'`, and returns `{ id }`. `owner.user_id` / `owner.roe_id` in report.json are filled from `runs.owner_id` / `runs.roe_id` at insert time.
+3. **Endpoints (all behind `authenticate`, owner-or-staff checks):**
+   - `GET /api/run-reports` -> list for the current user: `id, run_id, generated_at, overall_severity, counts` (no full JSON, keeps the list light).
+   - `GET /api/run-reports/:id` -> `{ id, run_id, generated_at, report: <report_json> }`; the frontend renders that object directly.
+   - Never re-render HTML on the server: `report.html` stays a downloadable file, the SPA renders from JSON.
+4. **Frontend wiring (already prepared):** `ReportPage` takes an optional `report: ScanReport` prop and defaults to `src/data/sample-report.ts`. Replace the default with a `useApi<{ report: ScanReport }>('/run-reports/:id')` fetch and delete the mock import — no other component changes needed. Types live in `src/lib/reportTypes.ts` and mirror `report.schema.json`.
+5. **Retention / audit:** store `schema_version` so old reports remain readable; add an `audit_events` row `report.stored` on insert. Deleting a run cascades to its report (`ON DELETE CASCADE` already set).
+
+### Report module status
+
+- **DONE**: package, schema, builder, AI writer + cache + fallback, standalone HTML (cover, exec summary, severity bar with overall marker, filter chips, Simple/Technical toggle, `<details>` cards, auto-text badge, tool table, AI disclaimer, print CSS), Markdown, CLI flags, `--report-from`, `react_loop.py` per-finding LLM removed, tests (85 checks green).
+- **DONE (Phase 2)**: frontend Report page at `/app/reports/engine` — `web/frontend/src/pages/ReportPage.tsx`, typed mirror in `src/lib/reportTypes.ts`, mock data `src/data/sample-report.json` + `sample-report.ts`, styles `.rp-*` appended to `src/styles/global.css` (dark theme + print overrides). "Download PDF" = `window.print()`; `beforeprint` opens every card.
+- **Phase 1 files (all done, in build order)**: `schema.py` (severity scale, stable ids, `REPORTS_DIR`) → `builder.py` (all facts: counts, durations, tool table, overall, `coverage_note`) → `render_html.py` (self-contained HTML, filter chips, Simple/Technical toggle, print CSS) → `ai_writer.py` (issue-type batching, hard call cap, cache, fallback dict) → `render_md.py` (Markdown from the same data) → `main.py` / `react_loop.py` / `llm_client.py` edits (`--no-ai`, `--refresh-ai`, `--report-from`; per-finding LLM call removed, `f["summary"] = f["name"]`; `ask()` gained `max_tokens` / `temperature` / `reasoning_effort` with unchanged defaults) → `test_reporting.py` (85 plain asserts, green). `core/report.py` is a thin shim.
+- **NEXT (Phase 3)**: backend JSONB persistence + endpoints as described above (documented, not built).
+- **Known issues**: `header_checks` still makes a real HTTP request in `--dry-run` (pre-existing, it is a pure-Python tool); AI text is English-only; the AI executive summary is cached by payload hash, so changing counts invalidates it by design; the frontend report page still uses mock data.
+
+### Progress log
+
+- 2026-11-27 — Phase 1 reporting module built and committed (`feat(core): reporting module`); 85 test checks pass; `--no-ai` dry run verified end-to-end.
+- 2026-11-27 — Phase 2 frontend Report page built and committed (`feat(web): engine report page`); `npm run typecheck` and `npm run build` pass.
+- 2026-11-27 — Phase 3 backend integration plan written (documented only).
+- 2026-11-27 — Phase 1 re-verified end-to-end: `python reporting/test_reporting.py` = 85/85 pass; sample-data `--no-ai` run regenerated `report.json`/`report.html`/`report.md` under `core/reports/` for manual review of the HTML. No Phase 2/3 work started.
 
 ---
 
@@ -340,14 +447,15 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 
 - **Phase 0 (Planning & Docs)**: SRS, diagrams, pitch deck, WBS all complete.
 - **Core engine — tool wrappers**: 9 tool wrappers implemented (8 in TOOL_ORDER, nikto registered but not in TOOL_ORDER) (`nmap`, `whatweb`, `wafw00f`, `ffuf`, `header_checks`, `nuclei`, `zap`, `nikto`, `sqlmap`). `--dry-run` mode works.
-- **Core engine — ReAct loop**: `core/agent/react_loop.py` runs tools in fixed order, catches errors/crashes gracefully, calls LLM for plain-language summaries of medium+/high/critical findings.
+- **Core engine — ReAct loop**: `core/agent/react_loop.py` runs tools in fixed order, catches errors/crashes gracefully. It no longer calls the LLM (Nov 2026): `f["summary"] = f["name"]` and all AI text is written once per report by the reporting module.
 - **Core engine — Logger**: `core/logging_system/action_logger.py` writes per-run JSONL logs. Existing log files in `logging_system/logs/` confirm it has been run.
-- **Core engine — Report Writer**: `core/report.py` generates Markdown + JSON reports to `core/reports/`. Existing reports confirm it works.
+- **Core engine — Report Writer**: built Nov 2026 in `core/reporting/` (see section 6A). One scan -> `core/reports/<run_id>/report.json` (source of truth) + `report.html` (standalone, print-to-PDF) + `report.md`. Token-frugal AI text with a disk cache and static fallback. Old `core/report.py` is a thin shim. Tests: `python reporting/test_reporting.py` (85 checks, all green).
 - **Backend — Auth system**: full auth stack done: registration, email verification, login with lockout, JWT access + refresh tokens, session management, password reset, rate limiting, RBAC, CSRF protection, security headers, audit logging. 4 DB migrations applied. Email verification and password reset: implemented, not verified end-to-end.
 - **Backend — API endpoints**: targets, ROE documents (upload + manual review queue), runs (simulated), findings, reports, billing (simulated), admin views all wired.
 - **Backend — Email**: nodemailer sender + templates for verification, password reset, password changed, account-exists notice.
 - **Frontend — Full SPA**: all pages built: Dashboard, Targets, ROE upload, ROE status, Runs, Run Monitor, Findings, Reports, Billing, Settings, Review Queue, Admin (users, tools, models, audit-log), all auth pages, all public/legal pages. **DONE.**
 - **Frontend — Auth integration**: login, signup, session management, email verification, password reset flows all wired to backend API. **DONE.**
+- **Frontend — engine report page**: `/app/reports/engine` renders a real `report.json` (mock file for now) with overall badge, severity scale, filter chips, Simple/Technical toggle, finding cards and tool coverage. PRINT/PDF via `window.print()`. **DONE (mock data).** Files: `src/pages/ReportPage.tsx`, `src/lib/reportTypes.ts`, `src/data/sample-report.*`, `.rp-*` styles in `global.css`.
 
 ### In Progress
 
@@ -355,7 +463,7 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 
 ### Next Task
 
-(owner decides)
+Report module Phase 3: backend JSONB persistence + `/api/run-reports` endpoints, then point the frontend report page at them (plan in section 6A). Otherwise, owner decides.
 
 ### Known Issues
 
@@ -366,7 +474,7 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 - **`.pgverify/` in repo root**: an untracked embedded-Postgres data directory; not in `.gitignore` by name. `AUTH_PROGRESS.md` notes old SQLite files in `backend/data/` as a cleanup item.
 - **ZAP with Juice Shop (SPA)**: `zap_wrapper.py` notes that the classic ZAP spider can't crawl single-page apps like Juice Shop — the AJAX spider would be needed.
 - **Frontend visual bugs**: mentioned as a backlog item but specific bugs are not documented in code.
-- **ReAct loop uses a fixed tool order**: `TOOL_ORDER` in `react_loop.py` is a hardcoded list. The LLM does not choose which tools to run or in what order; it only produces plain-language summaries of medium/high/critical findings after each tool runs.
+- **ReAct loop uses a fixed tool order**: `TOOL_ORDER` in `react_loop.py` is a hardcoded list. The LLM does not choose which tools to run or in what order (it only writes report text now).
 
 ---
 
