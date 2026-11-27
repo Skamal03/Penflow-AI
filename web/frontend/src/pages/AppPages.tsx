@@ -347,7 +347,7 @@ export function FindingsPage() {
 
 export function ReportsPage() {
   const { data, loading, error, reload } = useApi<{ reports: Array<{ id: string; run_id: string; generated_at: string }> }>('/reports');
-  return <><PageHeader eyebrow="WORKSPACE / REPORTS" title="Reports" detail="Report text is generated from seeded data in this build; the report engine is not connected." />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.reports.length ? <EmptyState title="No reports yet." /> : <ul className="inline-list">{data.reports.map((report) => <li key={report.id}><Link to={`/app/reports/${report.id}`}><code>{report.id}</code> · {report.run_id}</Link><span className="small">{new Date(report.generated_at).toLocaleDateString()}</span></li>)}</ul>}</>;
+  return <><PageHeader eyebrow="WORKSPACE / REPORTS" title="Reports" detail="Report text is generated from seeded data in this build; the report engine writes structured files (report.json + report.html) that the backend does not serve yet." action={<Link className="button button-secondary" to="/app/reports/engine">Open engine report</Link>} />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.reports.length ? <EmptyState title="No reports yet." /> : <ul className="inline-list">{data.reports.map((report) => <li key={report.id}><Link to={`/app/reports/${report.id}`}><code>{report.id}</code> · {report.run_id}</Link><span className="small">{new Date(report.generated_at).toLocaleDateString()}</span></li>)}</ul>}</>;
 }
 
 function renderMarkdown(markdown: string) {

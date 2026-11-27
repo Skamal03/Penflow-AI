@@ -778,3 +778,167 @@ dialog.plan-dialog::backdrop { background: rgba(0, 0, 0, .78); }
   .app-main { padding: 0; }
   .panel { color: #111; border-color: #aaa; background: #fff; }
 }
+
+/* ---------- Engine report page (report.json, core/reporting) ---------- */
+.rp { max-width: 980px; }
+.rp-cover {
+  margin-top: 20px;
+  padding: 28px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--glass-border);
+  background: linear-gradient(160deg, rgba(139, 92, 255, .18), rgba(34, 211, 238, .08) 55%, rgba(198, 244, 50, .10));
+}
+.rp-brand {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rp-cover h2 { margin: 8px 0 6px; font-size: 26px; }
+.rp-target { font-family: var(--mono); word-break: break-all; margin: 0 0 6px; }
+.rp-meta { color: var(--text-muted); font-size: 13px; margin: 0 0 18px; }
+.rp-overall {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  border-radius: var(--r-pill);
+  background: var(--c);
+  color: #fff;
+  font-weight: 600;
+}
+.rp-facts { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 12px 0 0; }
+.rp-facts li { background: var(--neo-light); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.rp-facts strong { font-variant-numeric: tabular-nums; }
+.rp-scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+.rp-seg {
+  position: relative;
+  padding: 18px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  text-align: center;
+}
+.rp-seg-bar { position: absolute; inset: 0 0 auto 0; height: 6px; background: var(--c); border-radius: 12px 12px 0 0; }
+.rp-seg.is-overall { box-shadow: inset 0 0 0 2px var(--c); }
+.rp-marker {
+  position: absolute;
+  top: 10px;
+  right: 8px;
+  padding: 2px 6px;
+  border-radius: var(--r-pill);
+  background: var(--text);
+  color: var(--bg-base);
+  font-size: 9px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.rp-seg-count { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rp-seg-label { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.rp-legend { list-style: none; display: grid; gap: 8px; padding: 0; margin: 16px 0 0; font-size: 14px; }
+.rp-legend li { display: grid; grid-template-columns: 12px 1fr; gap: 10px; align-items: start; }
+.rp-dot { width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; background: var(--c); }
+.rp-muted { color: var(--text-muted); }
+.rp-controls { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.rp-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.rp-chip {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.rp-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.rp-chip:focus-visible, .rp-toggle input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.rp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
+.rp-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.rp-card {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--c);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+.rp-card summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  align-items: center;
+  padding: 14px 16px;
+  list-style: none;
+  cursor: pointer;
+}
+.rp-card summary::-webkit-details-marker { display: none; }
+.rp-card summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.rp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--r-pill);
+  background: var(--c);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rp-card-title { font-weight: 600; }
+.rp-card-meta { grid-column: 2; font-family: var(--mono); font-size: 12px; color: var(--text-muted); word-break: break-all; }
+.rp-auto {
+  grid-column: 2;
+  justify-self: start;
+  padding: 1px 8px;
+  border: 1px solid #695022;
+  border-radius: var(--r-pill);
+  background: #261F12;
+  color: var(--warning);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.rp-card-body { padding: 4px 16px 16px; border-top: 1px solid var(--border); }
+.rp-card-body h4 {
+  margin: 14px 0 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.rp-fix { padding: 10px 12px; border: 1px solid rgba(198, 244, 50, .22); border-radius: 10px; background: rgba(198, 244, 50, .07); }
+.rp-fix h4 { margin-top: 0; color: var(--accent); }
+.rp-card pre {
+  max-height: 260px;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #050607;
+  color: #D7DBDF;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.rp-footer { margin-top: 20px; color: var(--text-muted); font-size: 12px; }
+@media (max-width: 700px) {
+  .rp-scale { grid-template-columns: repeat(2, 1fr); }
+}
+@media print {
+  .rp { max-width: none; }
+  .rp-controls { display: none !important; }
+  .rp-cover { background: #fff !important; border: 2px solid #111 !important; }
+  .rp-brand, .rp-meta, .rp-target, .rp-legend, .rp-footer { color: #111 !important; }
+  .rp-overall, .rp-badge { background: #fff !important; color: #111 !important; border: 1px solid var(--c) !important; }
+  .rp-seg, .rp-card, .rp-fix { background: #fff !important; border-color: #bbb !important; }
+  .rp-card { break-inside: avoid; page-break-inside: avoid; }
+  .rp-card pre { max-height: none; background: #f4f4f4 !important; color: #111 !important; border-color: #ccc !important; }
+  .rp-seg-bar, .rp-dot { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

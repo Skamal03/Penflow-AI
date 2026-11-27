@@ -10,6 +10,7 @@ import {
 } from './pages/AppPages';
 import { LegalPage } from './pages/LegalPages';
 import { PublicPage } from './pages/PublicPages';
+import { ReportPage } from './pages/ReportPage';
 
 function RequireSession() {
   const { user, loading } = useSession();
@@ -45,6 +46,7 @@ function RouteFocus() {
       '/app/roe/new': 'Upload ROE · PenflowAI',
       '/app/runs': 'Test runs · PenflowAI',
       '/app/reports': 'Reports · PenflowAI',
+      '/app/reports/engine': 'Engine report · PenflowAI',
       '/app/billing': 'Billing · PenflowAI',
       '/app/settings': 'Settings · PenflowAI',
       '/admin/review-queue': 'Review queue · PenflowAI',
@@ -115,6 +117,7 @@ export function AppRouter() {
         <Route path="/app/runs/:id" element={<RoleGate roles={['requester']}><RunMonitorPage /></RoleGate>} />
         <Route path="/app/findings/:runId" element={<RoleGate roles={['requester']}><FindingsPage /></RoleGate>} />
         <Route path="/app/reports" element={<RoleGate roles={['requester']}><ReportsPage /></RoleGate>} />
+        <Route path="/app/reports/engine" element={<RoleGate roles={['requester']}><ReportPage /></RoleGate>} />
         <Route path="/app/reports/:id" element={<RoleGate roles={['requester']}><ReportViewPage /></RoleGate>} />
         <Route path="/app/billing" element={<RoleGate roles={['requester']}><BillingPage /></RoleGate>} />
         <Route path="/app/settings" element={<SettingsPage />} />
