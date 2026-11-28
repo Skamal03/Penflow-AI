@@ -24,7 +24,7 @@ function PageHeader({ eyebrow, title, detail, action }: { eyebrow: string; title
 }
 
 function StatusBadge({ value }: { value: string }) {
-  const tone = value === 'approved' || value === 'verified' || value === 'complete' ? 'success' : value === 'rejected' || value === 'blocked' || value === 'failed' ? 'critical' : value === 'needs_review' || value === 'running' || value === 'pending' ? 'warning' : 'neutral';
+  const tone = value === 'approved' || value === 'verified' || value === 'complete' || value === 'ownership_verified' ? 'success' : value === 'rejected' || value === 'blocked' || value === 'failed' || value === 'revoked' ? 'critical' : ['needs_review', 'review_pending', 'running', 'pending', 'submitted', 'ownership_pending'].includes(value) ? 'warning' : 'neutral';
   return <Badge tone={tone}>{value.replaceAll('_', ' ')}</Badge>;
 }
 
@@ -225,12 +225,20 @@ export function TargetsPage() {
   </>;
 }
 
+function dateTimeLocalValue(date: Date): string {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
 export function RoeNewPage() {
   const { data, loading, error, reload } = useApi<{ targets: Target[] }>('/targets');
   const roeList = useApi<{ roes: Roe[] }>('/roe');
+  const toolList = useApi<{ tools: string[] }>('/roe/tools');
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [targetIds, setTargetIds] = useState<string[]>([]);
+  const [allowedTools, setAllowedTools] = useState<string[]>([]);
+  const [startTime, setStartTime] = useState(() => dateTimeLocalValue(new Date()));
+  const [endTime, setEndTime] = useState(() => dateTimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000)));
   const [attestation, setAttestation] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -245,8 +253,19 @@ export function RoeNewPage() {
     event.preventDefault(); setErrorMessage(''); setFieldErrors({});
     if (!file) { setFieldErrors({ document: 'Choose a PDF or DOCX document.' }); return; }
     if (!targetIds.length) { setFieldErrors({ targets: 'Choose at least one verified target.' }); return; }
+    if (!allowedTools.length) { setFieldErrors({ allowedTools: 'Choose at least one allowed tool.' }); return; }
+    if (!startTime || !endTime || !Number.isFinite(Date.parse(startTime)) || !Number.isFinite(Date.parse(endTime))) {
+      setFieldErrors({ startTime: 'Provide a valid authorization window.' });
+      return;
+    }
     if (!attestation) { setFieldErrors({ attestation: 'Confirm that you have written permission.' }); return; }
-    const form = new FormData(); form.set('document', file); form.set('targetIds', targetIds.join(',')); form.set('attestation', 'true');
+    const form = new FormData();
+    form.set('document', file);
+    form.set('targetIds', targetIds.join(','));
+    form.set('allowed_tools', JSON.stringify(allowedTools));
+    form.set('start_time', new Date(startTime).toISOString());
+    form.set('end_time', new Date(endTime).toISOString());
+    form.set('attestation', 'true');
     setBusy(true);
     try { const result = await api.postForm<{ roe: Roe }>('/roe', form); navigate(`/app/roe/${result.roe.id}`); }
     catch (caught) { setErrorMessage((caught as Error).message); }
@@ -258,37 +277,59 @@ export function RoeNewPage() {
       {errorMessage && <div className="error-summary" role="alert" aria-live="polite">{errorMessage}</div>}
       <div className="field"><label htmlFor="roe-document">ROE document <span className="required-word">required · PDF or DOCX · max 5 MB</span></label><input id="roe-document" name="document" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setFile(event.target.files?.[0] ?? null)} aria-describedby={fieldErrors.document ? 'document-error' : undefined} />{fieldErrors.document && <p className="field-error" id="document-error">{fieldErrors.document}</p>}</div>
       <fieldset className="panel"><legend>Verified targets <span className="required-word">required</span></legend><p className="small">Only verified targets can be included in this ROE.</p>{(data?.targets ?? []).filter((target) => target.status === 'verified').map((target) => <Checkbox key={target.id} id={`target-${target.id}`} name="targetIds" checked={targetIds.includes(target.id)} onChange={() => toggleTarget(target.id)} label={<>{target.label} · <code>{target.url}</code></>} />)}{fieldErrors.targets && <p className="field-error">{fieldErrors.targets}</p>}</fieldset>
+      <fieldset className="panel"><legend>Allowed tools <span className="required-word">required</span></legend>{toolList.loading ? <LoadingState label="Loading engine tools" /> : toolList.error ? <p className="field-error">{toolList.error}</p> : (toolList.data?.tools ?? []).map((tool) => <Checkbox key={tool} name="allowedTools" checked={allowedTools.includes(tool)} onChange={() => setAllowedTools((current) => current.includes(tool) ? current.filter((item) => item !== tool) : [...current, tool])} label={tool} />)}{fieldErrors.allowedTools && <p className="field-error">{fieldErrors.allowedTools}</p>}</fieldset>
+      <div className="field"><label htmlFor="startTime">Authorization starts <span className="required-word">required</span></label><input id="startTime" type="datetime-local" required value={startTime} onChange={(event) => setStartTime(event.target.value)} />{fieldErrors.startTime && <p className="field-error">{fieldErrors.startTime}</p>}</div>
+      <div className="field"><label htmlFor="endTime">Authorization ends <span className="required-word">required</span></label><input id="endTime" type="datetime-local" required value={endTime} onChange={(event) => setEndTime(event.target.value)} /></div>
       <Checkbox name="attestation" checked={attestation} onChange={(event) => setAttestation(event.target.checked)} error={fieldErrors.attestation} label={<>I own these systems or have written permission to test them, and this document is genuine and unaltered. <strong>required</strong></>} />
-      <Button type="submit" disabled={busy}>{busy ? 'Uploading…' : 'Upload ROE document'}</Button>
+      <Button type="submit" disabled={busy || toolList.loading || !toolList.data?.tools.length}>{busy ? 'Uploading…' : 'Upload ROE document'}</Button>
     </form>}
     <section className="section-block"><div className="section-heading"><h2>Your ROE documents</h2></div>{roeList.loading ? <LoadingState label="Loading ROE records" /> : roeList.error ? <ErrorState message={roeList.error} onRetry={roeList.reload} /> : !roeList.data?.roes.length ? <EmptyState title="No ROE documents yet." /> : <ul className="inline-list">{roeList.data.roes.map((roe) => <li key={roe.id}><Link to={`/app/roe/${roe.id}`}><code>{roe.id}</code> · {roe.file_name}</Link><StatusBadge value={roe.status} /></li>)}</ul>}</section>
   </>;
 }
 
 function parseJsonArray(value: string | undefined): string[] {
-  try { const parsed = JSON.parse(value ?? '[]'); return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; }
+  try {
+    const parsed = JSON.parse(value ?? '[]');
+    if (Array.isArray(parsed)) return parsed.map(String);
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.targets)) return parsed.targets.map(String);
+    return [];
+  } catch { return []; }
 }
-function roeStep(status: Roe['status']) { return status === 'checking' ? 1 : status === 'needs_review' || status === 'rejected' ? 2 : 3; }
+function roeStep(status: string) {
+  if (status === 'draft' || status === 'submitted') return 0;
+  if (status === 'rejected' || status === 'ownership_pending') return 1;
+  if (status === 'ownership_verified' || status === 'review_pending') return 2;
+  return 3;
+}
 
 export function RoeStatusPage() {
   const { id = '' } = useParams();
   const { data, loading, error, reload } = useApi<{ roe: Roe }>(`/roe/${id}`);
+  const roe = data?.roe;
+  const scopeJson = roe?.scope_json ?? '[]';
+  const scope = parseJsonArray(scopeJson);
+  const [selectedTarget, setSelectedTarget] = useState('');
+  const [runError, setRunError] = useState('');
+  useEffect(() => {
+    if (!scope.length) setSelectedTarget('');
+    else if (!scope.includes(selectedTarget)) setSelectedTarget(scope[0] ?? '');
+  }, [scopeJson, selectedTarget]);
   if (loading) return <LoadingState label="Loading authorization status" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
-  const roe = data?.roe;
   if (!roe) return <EmptyState title="This ROE document was not found." />;
+  const status = String(roe.status);
   const reasons = parseJsonArray(roe.reasons_json);
-  const scope = parseJsonArray(roe.scope_json);
-  const step = roeStep(roe.status);
-  return <><PageHeader eyebrow={`WORKSPACE / ROE / ${roe.id}`} title="Authorization status" detail={roe.file_name} action={roe.status === 'rejected' ? <Link className="button button-secondary" to="/app/roe/new">Upload a corrected document</Link> : undefined} />
-    <div className="panel"><div className="panel-heading"><h2>ROE verdict</h2><StatusBadge value={roe.status} /></div><ol className="roe-rail">{['Submitted', 'Automated check', 'Manual review', 'Scope token'].map((label, index) => <li key={label} className={index <= step ? 'is-current' : ''}>{String(index + 1).padStart(2, '0')} · {label}</li>)}</ol>
+  const step = roeStep(status);
+  return <><PageHeader eyebrow={`WORKSPACE / ROE / ${roe.id}`} title="Authorization status" detail={roe.file_name} action={status === 'rejected' ? <Link className="button button-secondary" to="/app/roe/new">Upload a corrected document</Link> : undefined} />
+    <div className="panel"><div className="panel-heading"><h2>ROE verdict</h2><StatusBadge value={status} /></div><ol className="roe-rail">{['Submitted', 'Automated check', 'Manual review', 'Scope token'].map((label, index) => <li key={label} className={index <= step ? 'is-current' : ''}>{String(index + 1).padStart(2, '0')} · {label}</li>)}</ol>
       <p><strong>Automated decision:</strong> {roe.automated_decision}{roe.confidence !== null && <> · confidence <code>{roe.confidence.toFixed(2)}</code></>}</p>
-      {reasons.length > 0 ? <><h3>Automated check reasons</h3><ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <p className="small">No automated check reasons were recorded.</p>}
+      {reasons.length > 0 ? <><h3>{status === 'rejected' ? 'Rejection reasons' : 'Automated check reasons'}</h3><ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></> : <p className="small">No validation reasons were recorded.</p>}
       {roe.reviewer_id && <div className="section-block"><h3>Manual review</h3><p><strong>Decision:</strong> {roe.decision?.replaceAll('_', ' ')}</p><p><strong>Reviewer:</strong> {roe.reviewer_id === '33333333-3333-4333-8333-333333333333' ? 'Sana Malik' : 'Assigned reviewer'}</p><p><strong>Note:</strong> {roe.note}</p><p className="small">{roe.decided_at ? new Date(roe.decided_at).toLocaleString() : ''}</p></div>}
     </div>
     <section className="panel"><div className="panel-heading"><h2>Approved scope</h2></div>{scope.length ? <ul className="scope-list">{scope.map((target) => <li key={target}><code>{target}</code></li>)}</ul> : <p className="small">No target scope is attached.</p>}
       {roe.scope_token ? <div className="scope-token" style={{ marginTop: 18 }}><strong>Scope token issued</strong><p className="small">Issued {roe.scope_token_issued_at ? new Date(roe.scope_token_issued_at).toLocaleString() : ''}. The displayed value is a stored token hash.</p><code>{roe.scope_token}</code></div> : <div className="scope-none" style={{ marginTop: 18 }}><strong>No token issued</strong><p className="small" style={{ margin: '5px 0 0' }}>No security test can start until this ROE is approved and a scope token is issued.</p></div>}
-      <div className="section-block"><h3>Start security test</h3><p className="small">Read-only targets from this ROE. A run can start only after approval.</p><Button disabled={!roe.scope_token} aria-describedby="roe-start-reason" onClick={async () => { try { const result = await api.post<{ run: Run }>('/runs', { roeId: roe.id }); window.location.assign(`/app/runs/${result.run.id}`); } catch { reload(); } }}>Start security test</Button><span id="roe-start-reason" className="sr-only">{!roe.scope_token ? 'Disabled because no approved scope token has been issued.' : 'This approved ROE has a scope token.'}</span></div>
+      {runError && <Alert tone="danger" role="alert">{runError}</Alert>}
+      <div className="section-block"><h3>Start security test</h3><p className="small">Read-only targets from this ROE. A run can start only after approval.</p><label className="field"><span>Target</span><select value={selectedTarget} onChange={(event) => { setSelectedTarget(event.target.value); setRunError(''); }}>{scope.map((target) => <option key={target} value={target}>{target}</option>)}</select></label><Button disabled={!roe.scope_token || !selectedTarget || status !== 'approved'} aria-describedby="roe-start-reason" onClick={async () => { setRunError(''); try { const result = await api.post<{ run: Run }>('/runs', { roeId: roe.id, target: selectedTarget }); window.location.assign(`/app/runs/${result.run.id}`); } catch (caught) { setRunError((caught as Error).message); reload(); } }}>Start security test</Button><span id="roe-start-reason" className="sr-only">{!roe.scope_token || status !== 'approved' ? 'Disabled because this ROE is not approved.' : !selectedTarget ? 'Choose a target included in this ROE.' : 'This approved ROE has a scope token.'}</span></div>
     </section>
   </>;
 }
@@ -413,15 +454,15 @@ export function ReviewQueuePage() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState('');
-  async function decide(id: string, decision: 'approve' | 'reject' | 'request_correction') {
+  async function decide(id: string, decision: 'approve' | 'reject') {
     const note = notes[id]?.trim() ?? '';
-    if (!note) { setMessages((current) => ({ ...current, [id]: decision === 'reject' ? 'A note is required when rejecting a document.' : 'Add a review note before submitting this decision.' })); return; }
+    if (!note) { setMessages((current) => ({ ...current, [id]: 'Provide a reason before submitting this decision.' })); return; }
     setBusy(id); setMessages((current) => ({ ...current, [id]: '' }));
-    try { await api.post(`/review/${id}`, { decision, note }); setMessages((current) => ({ ...current, [id]: `Decision recorded: ${decision.replaceAll('_', ' ')}.` })); reload(); }
+    try { await api.post(`/review/${id}`, { decision, reason: note }); setMessages((current) => ({ ...current, [id]: `Decision recorded: ${decision}.` })); reload(); }
     catch (caught) { setMessages((current) => ({ ...current, [id]: (caught as Error).message })); }
     finally { setBusy(''); }
   }
-  return <><PageHeader eyebrow="STAFF / ROE REVIEW" title="Review queue" detail="Review flagged authorization documents. Every decision is recorded in the audit log." />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.queue.length ? <EmptyState title="No documents need review." /> : data.queue.map((roe) => <article className="panel" key={roe.id}><div className="panel-heading"><div><h2>{roe.file_name}</h2><p className="small">{roe.owner_name} · {roe.owner_email} · <code>{roe.id}</code></p></div><Badge tone="warning">Confidence {roe.confidence?.toFixed(2)}</Badge></div><h3>Automated check reasons</h3><ul>{parseJsonArray(roe.reasons_json).map((reason) => <li key={reason}>{reason}</li>)}</ul><p><strong>Accepted attestation:</strong> The requester confirms ownership or written permission and that the document is genuine and unaltered.</p><label className="field"><span>Reviewer note <span className="required-word">required for every decision</span></span><textarea value={notes[roe.id] ?? ''} onChange={(event) => setNotes((current) => ({ ...current, [roe.id]: event.target.value }))} /></label>{messages[roe.id] && <Alert tone={messages[roe.id].startsWith('Decision') ? 'success' : 'danger'} role={messages[roe.id].startsWith('Decision') ? 'status' : 'alert'}>{messages[roe.id]}</Alert>}<div className="hero-actions"><Button disabled={busy === roe.id} onClick={() => void decide(roe.id, 'approve')}>Approve</Button><Button variant="danger" disabled={busy === roe.id} onClick={() => void decide(roe.id, 'reject')}>Reject</Button><Button variant="secondary" disabled={busy === roe.id} onClick={() => void decide(roe.id, 'request_correction')}>Ask for a corrected document</Button></div></article>)}</>;
+  return <><PageHeader eyebrow="STAFF / ROE REVIEW" title="Review queue" detail="Review ownership-verified authorization documents. Every decision is recorded in the audit log." />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : !data?.queue.length ? <EmptyState title="No documents need review." /> : data.queue.map((roe) => <article className="panel" key={roe.id}><div className="panel-heading"><div><h2>{roe.file_name}</h2><p className="small">{roe.owner_name} · {roe.owner_email} · <code>{roe.id}</code></p></div><Badge tone="warning">Confidence {roe.confidence?.toFixed(2)}</Badge></div><h3>Validation and review context</h3><ul>{parseJsonArray(roe.reasons_json).map((reason) => <li key={reason}>{reason}</li>)}</ul><p><strong>Accepted attestation:</strong> The requester confirms ownership or written permission and that the document is genuine and unaltered.</p><label className="field"><span>Reviewer reason <span className="required-word">required for every decision</span></span><textarea value={notes[roe.id] ?? ''} onChange={(event) => setNotes((current) => ({ ...current, [roe.id]: event.target.value }))} /></label>{messages[roe.id] && <Alert tone={messages[roe.id].startsWith('Decision') ? 'success' : 'danger'} role={messages[roe.id].startsWith('Decision') ? 'status' : 'alert'}>{messages[roe.id]}</Alert>}<div className="hero-actions"><Button disabled={busy === roe.id} onClick={() => void decide(roe.id, 'approve')}>Approve</Button><Button variant="danger" disabled={busy === roe.id} onClick={() => void decide(roe.id, 'reject')}>Reject</Button></div></article>)}</>;
 }
 
 export function AdminPage({ kind }: { kind: 'users' | 'tools' | 'models' | 'audit-log' }) {

@@ -23,6 +23,14 @@ const runSecond = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
 const report = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1';
 
 export async function seed(client: PoolClient): Promise<void> {
+  const runWindowStart = new Date(Date.now() - 60 * 1000).toISOString();
+  const runWindowEnd = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const roeScope = (targets: string[]) => JSON.stringify({
+    targets,
+    allowed_tools: ['header_checks'],
+    start_time: runWindowStart,
+    end_time: runWindowEnd,
+  });
   const addUser = 'INSERT INTO users (id, email, password_hash, display_name, account_type, role, email_verified, plan_id, created_at, email_verified_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)';
   const users: Array<[string, string, string, string, string, number, string]> = [
     [ayesha, 'requester@penflow.test', 'Ayesha Khan', 'freelance', 'requester', 1, 'starter'],
@@ -45,11 +53,21 @@ export async function seed(client: PoolClient): Promise<void> {
   const addRoe = `INSERT INTO roe_documents
     (id, owner_id, file_name, target_ids_json, scope_json, attestation, status, automated_decision, confidence, reasons_json, reviewer_id, decision, note, decided_at, scope_token, scope_token_issued_at, uploaded_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`;
-  await client.query(addRoe, [roeApproved, ayesha, 'juice-shop-roe.pdf', JSON.stringify([juice, dvwa]), '["http://localhost:3000","http://localhost:8080"]', true, 'approved', 'passed', 0.12, '[]', sana, 'approved', 'Automated checks passed. Scope token issued for the verified lab targets.', '2026-10-18T09:10:00.000Z', 'scope_demo_run_01_02', '2026-10-18T09:10:00.000Z', created]);
-  await client.query(addRoe, [roeReview, ayesha, 'client-scope-review.pdf', JSON.stringify([staging]), '["https://staging.example-client.test"]', true, 'needs_review', 'flagged', 0.91, JSON.stringify(['Signature field empty', 'Scope dates outside the requested window']), sana, 'request_correction', 'Please attach the signed authorization and align the scope dates with the requested test window.', '2026-10-18T09:20:00.000Z', null, null, '2026-10-18T09:15:00.000Z']);
-  await client.query(addRoe, [roeRejected, ayesha, 'edited-scope-roe.pdf', JSON.stringify([staging]), '["https://staging.example-client.test"]', true, 'rejected', 'flagged', 0.97, JSON.stringify(['Scope list edited after signing']), sana, 'rejected', 'The scope list appears to have changed after the document was signed. Submit an unchanged, newly authorised document.', '2026-10-18T09:30:00.000Z', null, null, '2026-10-18T09:25:00.000Z']);
-  await client.query(addRoe, [roeChecking, ayesha, 'pending-review.pdf', JSON.stringify([staging]), '["https://staging.example-client.test"]', true, 'checking', 'checking', null, '[]', null, null, null, null, null, null, '2026-10-18T09:35:00.000Z']);
-  await client.query(addRoe, [roeBilal, bilal, 'bilal-roe.pdf', JSON.stringify([bilalTarget]), '["http://localhost:3000"]', true, 'approved', 'passed', 0.08, '[]', null, 'approved', 'Lab ownership attested and scope checks passed.', '2026-10-18T09:40:00.000Z', 'scope_demo_bilal', '2026-10-18T09:40:00.000Z', '2026-10-18T09:38:00.000Z']);
+  await client.query(addRoe, [roeApproved, ayesha, 'juice-shop-roe.pdf', JSON.stringify([juice, dvwa]), roeScope(['http://localhost:3000', 'http://localhost:8080']), true, 'approved', 'passed', 0.12, '[]', sana, 'approved', 'Automated checks passed. Scope token issued for the verified lab targets.', '2026-10-18T09:10:00.000Z', 'scope_demo_run_01_02', '2026-10-18T09:10:00.000Z', created]);
+  await client.query(addRoe, [roeReview, ayesha, 'client-scope-review.pdf', JSON.stringify([staging]), roeScope(['https://staging.example-client.test']), true, 'review_pending', 'passed', 0.91, JSON.stringify(['Signature field empty', 'Scope dates outside the requested window']), null, null, null, null, null, null, '2026-10-18T09:15:00.000Z']);
+  await client.query(addRoe, [roeRejected, ayesha, 'edited-scope-roe.pdf', JSON.stringify([staging]), roeScope(['https://staging.example-client.test']), true, 'rejected', 'flagged', 0.97, JSON.stringify(['Scope list edited after signing']), sana, 'rejected', 'The scope list appears to have changed after the document was signed. Submit an unchanged, newly authorised document.', '2026-10-18T09:30:00.000Z', null, null, '2026-10-18T09:25:00.000Z']);
+  await client.query(addRoe, [roeChecking, ayesha, 'pending-review.pdf', JSON.stringify([staging]), roeScope(['https://staging.example-client.test']), true, 'submitted', 'checking', null, '[]', null, null, null, null, null, null, '2026-10-18T09:35:00.000Z']);
+  await client.query(addRoe, [roeBilal, bilal, 'bilal-roe.pdf', JSON.stringify([bilalTarget]), roeScope(['http://localhost:3000']), true, 'approved', 'passed', 0.08, '[]', null, 'approved', 'Lab ownership attested and scope checks passed.', '2026-10-18T09:40:00.000Z', 'scope_demo_bilal', '2026-10-18T09:40:00.000Z', '2026-10-18T09:38:00.000Z']);
+  const proofExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  for (const [roeId, target] of [
+    [roeApproved, 'http://localhost:3000'],
+    [roeApproved, 'http://localhost:8080'],
+    [roeBilal, 'http://localhost:3000'],
+  ]) {
+    await client.query('INSERT INTO roe_verifications (id, roe_id, target, token, method, expires_at, verified_at) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
+      randomUUID(), roeId, target, randomUUID(), 'dns', proofExpiry, new Date(),
+    ]);
+  }
 
   const addRun = 'INSERT INTO runs (id, owner_id, roe_id, status, stage, started_at, finished_at, scope_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
   await client.query(addRun, [runFirst, ayesha, roeApproved, 'complete', 'verify', '2026-10-18T10:00:00.000Z', '2026-10-18T10:14:00.000Z', '["http://localhost:3000"]']);

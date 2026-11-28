@@ -451,7 +451,9 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 - **Core engine — ReAct loop**: `core/agent/react_loop.py` runs tools in fixed order, catches errors/crashes gracefully. It no longer calls the LLM (Nov 2026): `f["summary"] = f["name"]` and all AI text is written once per report by the reporting module.
 - **Core engine — Logger**: `core/logging_system/action_logger.py` writes per-run JSONL logs. Existing log files in `logging_system/logs/` confirm it has been run.
 - **Core engine — Report Writer**: built Nov 2026 in `core/reporting/` (see section 6A). One scan -> `core/reports/<run_id>/report.json` (source of truth) + `report.html` (standalone, print-to-PDF) + `report.md`. Token-frugal AI text with a disk cache and static fallback. Old `core/report.py` is a thin shim. Tests: `python reporting/test_reporting.py` (85 checks, all green).
+- **Core — ROE Validator module**: `core/roe_validator/` validates ROE fields, dates, blocked/private targets, and ownership tokens via DNS, a well-known file, or homepage meta. It is standalone: no DB/auth, no scan-logic changes, and no caller sets `lab_mode` by default.
 - **Backend — Auth system**: full auth stack done: registration, email verification, login with lockout, JWT access + refresh tokens, session management, password reset, rate limiting, RBAC, CSRF protection, security headers, audit logging. 4 DB migrations applied. Email verification and password reset: implemented, not verified end-to-end.
+- **Backend — ROE workflow**: migration 006, Python validator bridge, validation/submission, per-target ownership verification, reviewer decisions, admin lab-mode/revocation controls, and run gating are implemented. The frontend now collects tools and authorization windows and limits run targets to approved ROE scope. Typechecks and isolated bridge tests pass; DB-backed workflow tests require `TEST_DATABASE_URL` and were not run.
 - **Backend — API endpoints**: targets, ROE documents (upload + manual review queue), runs (simulated), findings, reports, billing (simulated), admin views all wired.
 - **Backend — Email**: nodemailer sender + templates for verification, password reset, password changed, account-exists notice.
 - **Frontend — Full SPA**: all pages built: Dashboard, Targets, ROE upload, ROE status, Runs, Run Monitor, Findings, Reports, Billing, Settings, Review Queue, Admin (users, tools, models, audit-log), all auth pages, all public/legal pages. **DONE.**
@@ -464,7 +466,7 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 
 ### Next Task
 
-Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts` with the database run UUID and timestamp-named report folder. No completion endpoint or automatic caller is currently wired.
+Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts` with the database run UUID and timestamp-named report folder. No completion endpoint or automatic caller is currently wired; the ROE Validator is also intentionally not integrated into scan logic.
 
 ### Known Issues
 
@@ -477,10 +479,13 @@ Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts`
 - **Frontend visual bugs**: mentioned as a backlog item but specific bugs are not documented in code.
 - **ReAct loop uses a fixed tool order**: `TOOL_ORDER` in `react_loop.py` is a hardcoded list. The LLM does not choose which tools to run or in what order (it only writes report text now).
 - **Report ingestion is not invoked automatically**: `ingestReport(runId, reportFolderName)` persists report JSON and findings for the run owner, but is intentionally not called until an engine/orchestrator caller is added.
+- **ROE Validator is standalone**: `core/roe_validator/` is not wired into the Scope Guard or scan pipeline; `lab_mode` must only be supplied explicitly by a caller.
 
 ### Progress log
 
 - 2026-11-28 — Added backend report JSON persistence and owner-derived ingestion, fixed report-list timestamps, returned JSONB in the owner-filtered report endpoint, and added cross-user ingestion tests. The ingestion function is intentionally not wired to a completion endpoint or core code. Files: `backend/db/migrations/005_report_json.sql`, `backend/db/index.ts`, `backend/reporting/ingest-report.ts`, `backend/routes/api.ts`, `backend/tests/auth.test.ts`, `web/frontend/src/lib/types.ts`, `web/frontend/src/components/ui.tsx`, `AGENTS.md`. Next: connect the engine caller with both the DB UUID and timestamp folder name.
+- 2026-11-28 — Added the standalone ROE Validator and 13 mocked network/validation tests; existing `check_scope()` and scan logic were not changed. Files: `core/roe_validator/__init__.py`, `__main__.py`, `rules.py`, `network.py`, `ownership.py`, `cli.py`, `tests/test_roe_validator.py`, `AGENTS.md`. The validator and report-ingestion caller remain intentionally unwired.
+- 2026-11-28 — Added the backend ROE validation and ownership workflow, role-gated review/admin actions, and run-time scope/window checks; added frontend ROE scope controls and injectable-validator tests. Backend/frontend typechecks and the isolated validator bridge tests pass. Database-backed tests were not run because `TEST_DATABASE_URL` is unset. Files: `backend/db/migrations/006_roe_validation.sql`, `backend/db/index.ts`, `backend/db/seed.ts`, `backend/db/reset.ts`, `backend/package.json`, `backend/roe/validator-client.ts`, `backend/routes/api.ts`, `backend/tests/auth.test.ts`, `backend/tests/roe-validator-client.test.ts`, `web/frontend/src/pages/AppPages.tsx`, `AGENTS.md`.
 
 ---
 

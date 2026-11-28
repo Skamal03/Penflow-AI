@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
 import { createHmac, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
+import { setValidatorRunner, type ValidatorRunner } from '../roe/validator-client.js';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 if (!connectionString) throw new Error('Set TEST_DATABASE_URL to a disposable PostgreSQL database before running the auth tests.');
@@ -17,12 +18,28 @@ process.env.APP_BASE_URL = 'http://127.0.0.1:5173';
 
 type Database = typeof import('../db/index.js');
 
-const tables = ['schema_migrations', 'users', 'sessions', 'login_attempts', 'targets', 'roe_documents', 'runs', 'findings', 'reports', 'audit_events', 'waitlist', 'plan_change_requests', 'email_tokens', 'rate_events'];
+const tables = ['schema_migrations', 'users', 'sessions', 'login_attempts', 'targets', 'roe_verifications', 'roe_documents', 'runs', 'findings', 'reports', 'audit_events', 'waitlist', 'plan_change_requests', 'email_tokens', 'rate_events'];
 const demoPassword = 'Penflow!2026';
 
 let base = '';
 let db: Database;
 let stopServer: () => Promise<void>;
+let validationResponse: { status: 'valid' | 'invalid'; reasons: string[]; targets: string[] } = { status: 'valid', reasons: [], targets: [] };
+let ownershipResponse = { verified: false, method: null as 'dns' | 'file' | 'meta' | null, detail: 'Ownership token was not found.' };
+let lastValidationInput: Record<string, unknown> | null = null;
+
+const mockedValidatorRunner: ValidatorRunner = async (_command, args, options) => {
+  assert.equal(options.timeout, 15_000);
+  assert.ok(options.cwd.endsWith('core'));
+  if (args[2] === 'validate') {
+    const fileIndex = args.indexOf('--file');
+    assert.ok(fileIndex >= 0);
+    lastValidationInput = JSON.parse(await readFile(args[fileIndex + 1]!, 'utf8')) as Record<string, unknown>;
+    return { stdout: JSON.stringify(validationResponse) };
+  }
+  if (args[2] === 'ownership') return { stdout: JSON.stringify(ownershipResponse) };
+  throw new Error(`Unexpected validator command: ${args.join(' ')}`);
+};
 
 class Client {
   cookies = new Map<string, string>();
@@ -54,6 +71,15 @@ class Client {
     return response;
   }
 
+  async requestForm(path: string, body: FormData): Promise<Response> {
+    const headers: Record<string, string> = { 'x-requested-with': 'fetch' };
+    const cookie = this.header();
+    if (cookie) headers.cookie = cookie;
+    const response = await fetch(`${base}${path}`, { method: 'POST', headers, body });
+    this.capture(response);
+    return response;
+  }
+
   async login(email: string, password: string): Promise<Response> {
     return this.request('/api/auth/login', 'POST', { email, password });
   }
@@ -66,6 +92,56 @@ function expiredAccessToken(): string {
   const payload = encode({ sub: '11111111-1111-4111-8111-111111111111', role: 'requester', sid: 'expired-session', iat: seconds - 3600, exp: seconds - 60, jti: 'expired' });
   const signature = createHmac('sha256', process.env.JWT_SECRET as string).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${signature}`;
+}
+
+function roeForm(targetId: string, extra: Record<string, string> = {}): FormData {
+  const form = new FormData();
+  form.set('document', new Blob(['%PDF-1.7 test'], { type: 'application/pdf' }), 'workflow.pdf');
+  form.set('targetIds', targetId);
+  form.set('attestation', 'true');
+  form.set('allowed_tools', JSON.stringify(['header_checks']));
+  form.set('start_time', new Date(Date.now() - 60 * 1000).toISOString());
+  form.set('end_time', new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
+  for (const [key, value] of Object.entries(extra)) form.set(key, value);
+  return form;
+}
+
+async function uploadRoe(client: Client, targetId: string) {
+  const response = await client.requestForm('/api/roe', roeForm(targetId));
+  const body = await response.json() as { roe?: { id: string; status: string; reasons_json: string; file_path: string; lab_mode: boolean } };
+  assert.equal(response.status, 201);
+  assert.ok(body.roe);
+  return body.roe;
+}
+
+async function insertWorkflowRoe(ownerId: string, targetId: string, options: {
+  status?: string;
+  labMode?: boolean;
+  startTime?: string;
+  endTime?: string;
+  scopeToken?: string | null;
+} = {}): Promise<string> {
+  const target = await db.one<{ url: string }>('SELECT url FROM targets WHERE id = $1', [targetId]);
+  assert.ok(target);
+  const id = randomUUID();
+  const scope = {
+    targets: [target.url],
+    allowed_tools: ['header_checks'],
+    start_time: options.startTime ?? new Date(Date.now() - 60 * 1000).toISOString(),
+    end_time: options.endTime ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+  await db.run(`INSERT INTO roe_documents
+    (id, owner_id, file_name, target_ids_json, scope_json, attestation, status, automated_decision, reasons_json, scope_token, lab_mode, uploaded_at)
+    VALUES ($1, $2, 'workflow.pdf', $3, $4, TRUE, $5, 'passed', '[]', $6, $7, NOW())`, [
+    id,
+    ownerId,
+    JSON.stringify([targetId]),
+    JSON.stringify(scope),
+    options.status ?? 'approved',
+    options.scopeToken === undefined ? 'scope-test-token' : options.scopeToken,
+    options.labMode ?? false,
+  ]);
+  return id;
 }
 
 before(async () => {
@@ -169,6 +245,223 @@ test('another user\'s run returns 404 instead of 403', async () => {
   const run = await db.one<{ id: string }>('SELECT r.id FROM runs r JOIN users u ON u.id = r.owner_id WHERE u.email = $1 ORDER BY r.started_at', ['requester@penflow.test']);
   assert.ok(run);
   assert.equal((await client.request(`/api/runs/${run.id}`)).status, 404);
+});
+
+test('invalid validator results reject the ROE and ignore requester lab_mode fields', async () => {
+  const previousValidation = validationResponse;
+  const restoreRunner = setValidatorRunner(mockedValidatorRunner);
+  validationResponse = { status: 'invalid', reasons: ['Authorization window is expired.'], targets: [] };
+  const client = new Client();
+  let roeId = '';
+  let filePath = '';
+  try {
+    assert.equal((await client.login('requester@penflow.test', demoPassword)).status, 200);
+    const target = await db.one<{ id: string }>("SELECT id FROM targets WHERE owner_id = (SELECT id FROM users WHERE email = 'requester@penflow.test') AND status = 'verified' ORDER BY id LIMIT 1");
+    assert.ok(target);
+    const form = roeForm(target.id, { lab_mode: 'true', owner_name: 'Untrusted Name', owner_contact: 'untrusted@example.test' });
+    const response = await client.requestForm('/api/roe', form);
+    assert.equal(response.status, 201);
+    const body = await response.json() as { roe: { id: string; status: string; reasons_json: string; file_path: string; lab_mode: boolean } };
+    roeId = body.roe.id;
+    filePath = body.roe.file_path;
+    assert.equal(body.roe.status, 'rejected');
+    assert.deepEqual(JSON.parse(body.roe.reasons_json), ['Authorization window is expired.']);
+    assert.equal(body.roe.lab_mode, false);
+    assert.equal(lastValidationInput?.owner_name, 'Ayesha Khan');
+    assert.equal(lastValidationInput?.owner_contact, 'requester@penflow.test');
+    assert.equal(Object.prototype.hasOwnProperty.call(lastValidationInput, 'lab_mode'), false);
+  } finally {
+    validationResponse = previousValidation;
+    restoreRunner();
+    if (roeId) await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+    if (filePath) await rm(filePath, { force: true });
+  }
+});
+
+test('wrong and expired ownership tokens do not verify a ROE', async () => {
+  const previousValidation = validationResponse;
+  const previousOwnership = ownershipResponse;
+  const restoreRunner = setValidatorRunner(mockedValidatorRunner);
+  validationResponse = { status: 'valid', reasons: [], targets: [] };
+  ownershipResponse = { verified: false, method: null, detail: 'Ownership token was not found.' };
+  const client = new Client();
+  let roeId = '';
+  let filePath = '';
+  try {
+    assert.equal((await client.login('requester@penflow.test', demoPassword)).status, 200);
+    const target = await db.one<{ id: string }>("SELECT id FROM targets WHERE owner_id = (SELECT id FROM users WHERE email = 'requester@penflow.test') AND status = 'verified' ORDER BY id LIMIT 1");
+    assert.ok(target);
+    const roe = await uploadRoe(client, target.id);
+    roeId = roe.id;
+    filePath = roe.file_path;
+    assert.equal(roe.status, 'ownership_pending');
+    const issued = await client.request(`/api/roe/${roeId}/verification`, 'POST', {});
+    assert.equal(issued.status, 201);
+    assert.equal((await client.request(`/api/roe/${roeId}/verify`, 'POST', {})).status, 409);
+    assert.equal((await db.one<{ status: string }>('SELECT status FROM roe_documents WHERE id = $1', [roeId]))?.status, 'ownership_pending');
+    await db.run('UPDATE roe_verifications SET expires_at = NOW() - INTERVAL \'1 second\' WHERE roe_id = $1', [roeId]);
+    assert.equal((await client.request(`/api/roe/${roeId}/verify`, 'POST', {})).status, 409);
+    assert.equal((await db.one<{ verified_at: Date | null }>('SELECT verified_at FROM roe_verifications WHERE roe_id = $1', [roeId]))?.verified_at, null);
+  } finally {
+    validationResponse = previousValidation;
+    ownershipResponse = previousOwnership;
+    restoreRunner();
+    if (roeId) await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+    if (filePath) await rm(filePath, { force: true });
+  }
+});
+
+test('all successful target proofs move a ROE into the review queue', async () => {
+  const previousValidation = validationResponse;
+  const previousOwnership = ownershipResponse;
+  const restoreRunner = setValidatorRunner(mockedValidatorRunner);
+  validationResponse = { status: 'valid', reasons: [], targets: [] };
+  ownershipResponse = { verified: true, method: 'dns', detail: 'Ownership token matched.' };
+  const client = new Client();
+  let roeId = '';
+  let filePath = '';
+  try {
+    assert.equal((await client.login('requester@penflow.test', demoPassword)).status, 200);
+    const target = await db.one<{ id: string }>("SELECT id FROM targets WHERE owner_id = (SELECT id FROM users WHERE email = 'requester@penflow.test') AND status = 'verified' ORDER BY id LIMIT 1");
+    assert.ok(target);
+    const roe = await uploadRoe(client, target.id);
+    roeId = roe.id;
+    filePath = roe.file_path;
+    assert.equal((await client.request(`/api/roe/${roeId}/verification`, 'POST', {})).status, 201);
+    const verified = await client.request(`/api/roe/${roeId}/verify`, 'POST', {});
+    assert.equal(verified.status, 200);
+    assert.equal((await db.one<{ status: string }>('SELECT status FROM roe_documents WHERE id = $1', [roeId]))?.status, 'review_pending');
+    assert.equal((await db.one<{ method: string; verified_at: Date | null }>('SELECT method, verified_at FROM roe_verifications WHERE roe_id = $1', [roeId]))?.method, 'dns');
+    assert.ok((await db.one<{ verified_at: Date | null }>('SELECT verified_at FROM roe_verifications WHERE roe_id = $1', [roeId]))?.verified_at);
+  } finally {
+    validationResponse = previousValidation;
+    ownershipResponse = previousOwnership;
+    restoreRunner();
+    if (roeId) await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+    if (filePath) await rm(filePath, { force: true });
+  }
+});
+
+test('another requester gets 404 for an owned ROE and its verification routes', async () => {
+  const previousValidation = validationResponse;
+  const restoreRunner = setValidatorRunner(mockedValidatorRunner);
+  validationResponse = { status: 'valid', reasons: [], targets: [] };
+  const owner = new Client();
+  const other = new Client();
+  let roeId = '';
+  let filePath = '';
+  try {
+    assert.equal((await owner.login('requester@penflow.test', demoPassword)).status, 200);
+    assert.equal((await other.login('requester2@penflow.test', demoPassword)).status, 200);
+    const target = await db.one<{ id: string }>("SELECT id FROM targets WHERE owner_id = (SELECT id FROM users WHERE email = 'requester@penflow.test') AND status = 'verified' ORDER BY id LIMIT 1");
+    assert.ok(target);
+    const roe = await uploadRoe(owner, target.id);
+    roeId = roe.id;
+    filePath = roe.file_path;
+    assert.equal((await other.request(`/api/roe/${roeId}`)).status, 404);
+    assert.equal((await other.request(`/api/roe/${roeId}/verification`, 'POST', {})).status, 404);
+    assert.equal((await other.request(`/api/roe/${roeId}/verify`, 'POST', {})).status, 404);
+  } finally {
+    validationResponse = previousValidation;
+    restoreRunner();
+    if (roeId) await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+    if (filePath) await rm(filePath, { force: true });
+  }
+});
+
+test('requesters cannot approve and reviewers cannot decide their own ROE', async () => {
+  const requester = new Client();
+  assert.equal((await requester.login('requester@penflow.test', demoPassword)).status, 200);
+  const reviewRoe = await db.one<{ id: string }>("SELECT id FROM roe_documents WHERE status = 'review_pending' ORDER BY uploaded_at LIMIT 1");
+  assert.ok(reviewRoe);
+  assert.equal((await requester.request(`/api/review/${reviewRoe.id}`, 'POST', { decision: 'approve', reason: 'Approved.' })).status, 403);
+
+  await db.run("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE email = 'reviewer@penflow.test'");
+  const reviewer = new Client();
+  assert.equal((await reviewer.login('reviewer@penflow.test', demoPassword)).status, 200);
+  const reviewerUser = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'reviewer@penflow.test'");
+  assert.ok(reviewerUser);
+  const roeId = randomUUID();
+  await db.run(`INSERT INTO roe_documents
+    (id, owner_id, file_name, target_ids_json, scope_json, attestation, status, automated_decision, reasons_json, uploaded_at)
+    VALUES ($1, $2, 'reviewer-owned.pdf', '[]', '[]', TRUE, 'review_pending', 'passed', '[]', NOW())`, [roeId, reviewerUser.id]);
+  try {
+    assert.equal((await reviewer.request(`/api/review/${roeId}`, 'POST', { decision: 'approve', reason: 'Approved.' })).status, 403);
+  } finally {
+    await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+  }
+});
+
+test('run creation requires approval, verified targets and an active scope window', async () => {
+  const client = new Client();
+  assert.equal((await client.login('requester@penflow.test', demoPassword)).status, 200);
+  const owner = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'requester@penflow.test'");
+  const targets = await db.query<{ id: string; url: string }>("SELECT id, url FROM targets WHERE owner_id = $1 AND status = 'verified' ORDER BY url", [owner?.id]);
+  assert.ok(owner);
+  assert.ok(targets.length >= 2);
+  const [target, outsideTarget] = targets;
+  assert.ok(target && outsideTarget);
+  const createdRoes: string[] = [];
+  const createdRuns: string[] = [];
+  try {
+    const pendingRoe = await insertWorkflowRoe(owner.id, target.id, { status: 'ownership_pending' });
+    createdRoes.push(pendingRoe);
+    assert.equal((await client.request('/api/runs', 'POST', { roeId: pendingRoe, target: target.url })).status, 409);
+
+    const unverifiedRoe = await insertWorkflowRoe(owner.id, target.id);
+    createdRoes.push(unverifiedRoe);
+    assert.equal((await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: target.url })).status, 409);
+    assert.equal((await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: outsideTarget.url })).status, 409);
+
+    await db.run(`INSERT INTO roe_verifications (id, roe_id, target, token, method, expires_at, verified_at)
+      VALUES ($1, $2, $3, 'verified-token', 'dns', NOW() + INTERVAL '1 day', NOW())`, [randomUUID(), unverifiedRoe, target.url]);
+    const allowed = await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: target.url });
+    assert.equal(allowed.status, 201);
+    const allowedBody = await allowed.json() as { run: { id: string } };
+    createdRuns.push(allowedBody.run.id);
+
+    const labRoe = await insertWorkflowRoe(owner.id, target.id, { labMode: true });
+    createdRoes.push(labRoe);
+    const labRun = await client.request('/api/runs', 'POST', { roeId: labRoe, target: target.url });
+    assert.equal(labRun.status, 201);
+    createdRuns.push((await labRun.json() as { run: { id: string } }).run.id);
+
+    const expiredRoe = await insertWorkflowRoe(owner.id, target.id, {
+      startTime: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      endTime: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    createdRoes.push(expiredRoe);
+    assert.equal((await client.request('/api/runs', 'POST', { roeId: expiredRoe, target: target.url })).status, 409);
+    assert.equal((await db.one<{ status: string }>('SELECT status FROM roe_documents WHERE id = $1', [expiredRoe]))?.status, 'expired');
+  } finally {
+    if (createdRuns.length) await db.run('DELETE FROM runs WHERE id = ANY($1::uuid[])', [createdRuns]);
+    if (createdRoes.length) await db.run('DELETE FROM roe_documents WHERE id = ANY($1::uuid[])', [createdRoes]);
+  }
+});
+
+test('admins can set lab mode but requesters cannot', async () => {
+  const owner = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'requester@penflow.test'");
+  const target = await db.one<{ id: string }>("SELECT id FROM targets WHERE owner_id = $1 AND status = 'verified' ORDER BY id LIMIT 1", [owner?.id]);
+  assert.ok(owner);
+  assert.ok(target);
+  const roeId = await insertWorkflowRoe(owner.id, target.id, { status: 'ownership_pending' });
+  try {
+    const requester = new Client();
+    assert.equal((await requester.login('requester@penflow.test', demoPassword)).status, 200);
+    assert.equal((await requester.request(`/api/admin/roe/${roeId}/lab-mode`, 'POST', { lab_mode: true })).status, 403);
+
+    const admin = new Client();
+    assert.equal((await admin.login('admin@penflow.test', demoPassword)).status, 200);
+    const changed = await admin.request(`/api/admin/roe/${roeId}/lab-mode`, 'POST', { lab_mode: true });
+    assert.equal(changed.status, 200);
+    const updated = await db.one<{ lab_mode: boolean; status: string }>('SELECT lab_mode, status FROM roe_documents WHERE id = $1', [roeId]);
+    assert.equal(updated?.lab_mode, true);
+    assert.equal(updated?.status, 'review_pending');
+    assert.equal((await admin.request(`/api/admin/roe/${roeId}/revoke`, 'POST', { reason: 'Test revocation.' })).status, 200);
+    assert.equal((await db.one<{ status: string }>('SELECT status FROM roe_documents WHERE id = $1', [roeId]))?.status, 'revoked');
+  } finally {
+    await db.run('DELETE FROM roe_documents WHERE id = $1', [roeId]);
+  }
 });
 
 test('engine reports are ingested for their run owner only', async () => {
