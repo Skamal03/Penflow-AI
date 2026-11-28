@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { setValidatorRunner, type ValidatorRunner } from '../roe/validator-client.js';
+import { setPolicyBuilderRunner } from '../scope-guard/policy-client.js';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 if (!connectionString) throw new Error('Set TEST_DATABASE_URL to a disposable PostgreSQL database before running the auth tests.');
@@ -18,7 +19,7 @@ process.env.APP_BASE_URL = 'http://127.0.0.1:5173';
 
 type Database = typeof import('../db/index.js');
 
-const tables = ['schema_migrations', 'users', 'sessions', 'login_attempts', 'targets', 'roe_verifications', 'roe_documents', 'runs', 'findings', 'reports', 'audit_events', 'waitlist', 'plan_change_requests', 'email_tokens', 'rate_events'];
+const tables = ['schema_migrations', 'users', 'sessions', 'login_attempts', 'targets', 'roe_verifications', 'roe_documents', 'scope_audit_log', 'runs', 'scope_tool_settings', 'scope_policies', 'findings', 'reports', 'audit_events', 'waitlist', 'plan_change_requests', 'email_tokens', 'rate_events'];
 const demoPassword = 'Penflow!2026';
 
 let base = '';
@@ -126,7 +127,7 @@ async function insertWorkflowRoe(ownerId: string, targetId: string, options: {
   const id = randomUUID();
   const scope = {
     targets: [target.url],
-    allowed_tools: ['header_checks'],
+    allowed_tools: ['nmap'],
     start_time: options.startTime ?? new Date(Date.now() - 60 * 1000).toISOString(),
     end_time: options.endTime ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
@@ -142,6 +143,86 @@ async function insertWorkflowRoe(ownerId: string, targetId: string, options: {
     options.labMode ?? false,
   ]);
   return id;
+}
+
+async function insertWorkflowPolicy(ownerId: string, roeId: string, targetId: string): Promise<string> {
+  const [target, roe] = await Promise.all([
+    db.one<{ url: string }>('SELECT url FROM targets WHERE id = $1 AND owner_id = $2', [targetId, ownerId]),
+    db.one<{ scope_json: string; lab_mode: boolean }>('SELECT scope_json, lab_mode FROM roe_documents WHERE id = $1 AND owner_id = $2', [roeId, ownerId]),
+  ]);
+  assert.ok(target && roe);
+  const scope = JSON.parse(roe.scope_json) as { start_time: string; end_time: string };
+  const parsedTarget = new URL(target.url);
+  const policyId = randomUUID();
+  const policy = {
+    selected_tools: ['nmap'],
+    tool_limits: { nmap: { allowed_flags: ['-sV'], max_rate: 10, max_duration: 120, max_requests: 100 } },
+    blocked_actions: [
+      'shell_execution',
+      'credential_bruteforce',
+      'denial_of_service',
+      'out_of_scope_redirect',
+      'raw_command_arguments',
+    ],
+    time_window: { start: scope.start_time, end: scope.end_time },
+    max_intrusion_level: 'low',
+    notes: [],
+    target: {
+      url: target.url,
+      host: parsedTarget.hostname,
+      port: parsedTarget.port ? Number(parsedTarget.port) : parsedTarget.protocol === 'https:' ? 443 : 80,
+      resolved_ips: ['127.0.0.1'],
+      lab_mode: roe.lab_mode,
+    },
+    policy_hash: 'a'.repeat(64),
+  };
+  await db.run(
+    `INSERT INTO scope_policies (id, roe_id, user_id, target_id, version, status, policy_json, policy_hash, created_by, expires_at)
+     VALUES ($1, $2, $3, $4, 1, 'active', $5::jsonb, $6, $3, $7)`,
+    [policyId, roeId, ownerId, targetId, JSON.stringify(policy), policy.policy_hash, scope.end_time],
+  );
+  return policyId;
+}
+
+async function insertPolicyRoe(ownerId: string, targetId: string, filePath: string): Promise<string> {
+  const target = await db.one<{ url: string }>('SELECT url FROM targets WHERE id = $1 AND owner_id = $2', [targetId, ownerId]);
+  assert.ok(target);
+  const id = randomUUID();
+  const startTime = new Date(Date.now() - 60 * 1000).toISOString();
+  const endTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await db.run(`INSERT INTO roe_documents
+    (id, owner_id, file_name, target_ids_json, scope_json, attestation, status, automated_decision, reasons_json, scope_token, lab_mode, file_path, uploaded_at)
+    VALUES ($1, $2, 'policy.docx', $3, $4, TRUE, 'approved', 'valid', '[]', 'approved-test-token', FALSE, $5, NOW())`, [
+    id,
+    ownerId,
+    JSON.stringify([targetId]),
+    JSON.stringify({ targets: [target.url], allowed_tools: ['nmap'], start_time: startTime, end_time: endTime }),
+    filePath,
+  ]);
+  await db.run(
+    'INSERT INTO roe_verifications (id, roe_id, target, token, method, expires_at, verified_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [randomUUID(), id, target.url, randomUUID(), 'dns', new Date(Date.now() + 60 * 60 * 1000), new Date()],
+  );
+  return id;
+}
+
+function policyBuildOutput(input: { target: Record<string, unknown>; time_window: Record<string, string> }): string {
+  return JSON.stringify({
+    selected_tools: ['nmap'],
+    tool_limits: { nmap: { allowed_flags: ['-sV'], max_rate: 10, max_duration: 120, max_requests: 100 } },
+    blocked_actions: [
+      'shell_execution',
+      'credential_bruteforce',
+      'denial_of_service',
+      'out_of_scope_redirect',
+      'raw_command_arguments',
+    ],
+    time_window: input.time_window,
+    max_intrusion_level: 'low',
+    notes: [],
+    target: input.target,
+    policy_hash: 'a'.repeat(64),
+  });
 }
 
 before(async () => {
@@ -237,6 +318,93 @@ test('a requester is denied an admin route', async () => {
   const client = new Client();
   assert.equal((await client.login('requester@penflow.test', demoPassword)).status, 200);
   assert.equal((await client.request('/api/admin/users')).status, 403);
+});
+
+test('scope policies are isolated by ROE and owner and runs require the exact matching policy', async () => {
+  const owner = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'requester@penflow.test'");
+  const otherOwner = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'requester2@penflow.test'");
+  const adminUser = await db.one<{ id: string }>("SELECT id FROM users WHERE email = 'admin@penflow.test'");
+  const target = await db.one<{ id: string }>(
+    "SELECT id FROM targets WHERE owner_id = (SELECT id FROM users WHERE email = 'requester@penflow.test') AND status = 'verified' ORDER BY id LIMIT 1",
+  );
+  assert.ok(owner && otherOwner && adminUser && target);
+  const secondTargetId = randomUUID();
+  const uploadPath = join(process.cwd(), 'data', 'roe-uploads');
+  await mkdir(uploadPath, { recursive: true });
+  const filePath = join(uploadPath, `${randomUUID()}.docx`);
+  await writeFile(filePath, 'mock approved ROE');
+  const roeA = await insertPolicyRoe(owner.id, target.id, filePath);
+  const roeB = await insertPolicyRoe(owner.id, target.id, filePath);
+  const secondTargetUrl = 'http://localhost:3001';
+  await db.run(
+    'INSERT INTO targets (id, owner_id, url, label, verification_method, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
+    [secondTargetId, owner.id, secondTargetUrl, 'Second test target', 'DNS TXT', 'verified'],
+  );
+  const roeAScope = await db.one<{ scope_json: string }>('SELECT scope_json FROM roe_documents WHERE id = $1 AND owner_id = $2', [roeA, owner.id]);
+  assert.ok(roeAScope);
+  const scope = JSON.parse(roeAScope.scope_json) as { targets: string[]; allowed_tools: string[]; start_time: string; end_time: string };
+  await db.run('UPDATE roe_documents SET target_ids_json = $1, scope_json = $2 WHERE id = $3 AND owner_id = $4', [
+    JSON.stringify([target.id, secondTargetId]),
+    JSON.stringify({ ...scope, targets: [...scope.targets, secondTargetUrl] }),
+    roeA,
+    owner.id,
+  ]);
+  await db.run(
+    'INSERT INTO roe_verifications (id, roe_id, target, token, method, expires_at, verified_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [randomUUID(), roeA, secondTargetUrl, randomUUID(), 'dns', new Date(Date.now() + 60 * 60 * 1000), new Date()],
+  );
+  const restorePolicyRunner = setPolicyBuilderRunner(async (inputPath) => {
+    const input = JSON.parse(await readFile(inputPath, 'utf8')) as {
+      target: Record<string, unknown>;
+      time_window: Record<string, string>;
+    };
+    return policyBuildOutput(input);
+  });
+  const requester = new Client();
+  const otherRequester = new Client();
+  const admin = new Client();
+  let createdPolicyId = '';
+  try {
+    assert.equal((await requester.login('requester@penflow.test', demoPassword)).status, 200);
+    const create = await requester.request(`/api/roe/${roeA}/policy`, 'POST', { targetId: target.id });
+    assert.equal(create.status, 201);
+    const created = await create.json() as { policyId: string; policy: { target: { host: string } } };
+    createdPolicyId = created.policyId;
+    assert.ok(createdPolicyId);
+    assert.equal(created.policy.target.host, 'localhost');
+    assert.equal((await requester.request(`/api/roe/${roeA}/policy?policyId=${createdPolicyId}`)).status, 200);
+    assert.equal((await requester.request(`/api/roe/${roeB}/policy?policyId=${createdPolicyId}`)).status, 404);
+    assert.equal((await requester.request(`/api/runs`, 'POST', { roeId: roeA, targetId: target.id })).status, 409);
+
+    const start = await requester.request('/api/runs', 'POST', { roeId: roeA, targetId: target.id, policyId: createdPolicyId });
+    assert.equal(start.status, 201, await start.clone().text());
+    const runBody = await start.json() as { run: { policy_id: string; target_id: string } };
+    assert.equal(runBody.run.policy_id, createdPolicyId);
+    assert.equal(runBody.run.target_id, target.id);
+    assert.equal((await requester.request('/api/runs', 'POST', { roeId: roeA, targetId: secondTargetId, policyId: createdPolicyId })).status, 409);
+    assert.equal((await requester.request('/api/runs', 'POST', { roeId: roeB, targetId: target.id, policyId: createdPolicyId })).status, 404);
+    await db.run("UPDATE scope_policies SET status = 'revoked' WHERE id = $1 AND roe_id = $2 AND user_id = $3", [createdPolicyId, roeA, owner.id]);
+    assert.equal((await requester.request('/api/runs', 'POST', { roeId: roeA, targetId: target.id, policyId: createdPolicyId })).status, 409);
+    await db.run("UPDATE scope_policies SET status = 'active', expires_at = NOW() - INTERVAL '1 second' WHERE id = $1 AND roe_id = $2 AND user_id = $3", [createdPolicyId, roeA, owner.id]);
+    assert.equal((await requester.request('/api/runs', 'POST', { roeId: roeA, targetId: target.id, policyId: createdPolicyId })).status, 409);
+
+    assert.equal((await otherRequester.login('requester2@penflow.test', demoPassword)).status, 200);
+    assert.equal((await otherRequester.request(`/api/roe/${roeA}/policy?policyId=${createdPolicyId}`)).status, 404);
+    assert.equal((await otherRequester.request(`/api/roe/${roeA}/policy`, 'POST', { targetId: target.id })).status, 404);
+    assert.equal((await requester.request('/api/admin/tools/nmap', 'PUT', { enabled: false })).status, 403);
+
+    assert.equal((await admin.login('admin@penflow.test', demoPassword)).status, 200);
+    assert.equal((await admin.request('/api/admin/tools/nmap', 'PUT', { enabled: false })).status, 200);
+    assert.equal((await admin.request('/api/admin/scope-policies')).status, 200);
+    assert.equal((await admin.request(`/api/roe/${roeA}/policy?policyId=${createdPolicyId}`)).status, 200);
+  } finally {
+    restorePolicyRunner();
+    await db.run('UPDATE scope_tool_settings SET enabled = TRUE, updated_by = $1 WHERE tool = $2', [adminUser.id, 'nmap']);
+    await db.run('DELETE FROM runs WHERE roe_id = ANY($1::uuid[])', [[roeA, roeB]]);
+    await db.run('DELETE FROM roe_documents WHERE id = ANY($1::uuid[])', [[roeA, roeB]]);
+    await db.run('DELETE FROM targets WHERE id = $1 AND owner_id = $2', [secondTargetId, owner.id]);
+    await rm(filePath, { force: true });
+  }
 });
 
 test('another user\'s run returns 404 instead of 403', async () => {
@@ -406,23 +574,33 @@ test('run creation requires approval, verified targets and an active scope windo
   try {
     const pendingRoe = await insertWorkflowRoe(owner.id, target.id, { status: 'ownership_pending' });
     createdRoes.push(pendingRoe);
-    assert.equal((await client.request('/api/runs', 'POST', { roeId: pendingRoe, target: target.url })).status, 409);
+    assert.equal((await client.request('/api/runs', 'POST', { roeId: pendingRoe, targetId: target.id })).status, 409);
 
     const unverifiedRoe = await insertWorkflowRoe(owner.id, target.id);
     createdRoes.push(unverifiedRoe);
-    assert.equal((await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: target.url })).status, 409);
-    assert.equal((await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: outsideTarget.url })).status, 409);
+    const unverifiedPolicy = await insertWorkflowPolicy(owner.id, unverifiedRoe, target.id);
+    assert.equal((await client.request('/api/runs', 'POST', {
+      roeId: unverifiedRoe, targetId: target.id, policyId: unverifiedPolicy,
+    })).status, 409);
+    assert.equal((await client.request('/api/runs', 'POST', {
+      roeId: unverifiedRoe, targetId: outsideTarget.id, policyId: unverifiedPolicy,
+    })).status, 404);
 
     await db.run(`INSERT INTO roe_verifications (id, roe_id, target, token, method, expires_at, verified_at)
       VALUES ($1, $2, $3, 'verified-token', 'dns', NOW() + INTERVAL '1 day', NOW())`, [randomUUID(), unverifiedRoe, target.url]);
-    const allowed = await client.request('/api/runs', 'POST', { roeId: unverifiedRoe, target: target.url });
+    const allowed = await client.request('/api/runs', 'POST', {
+      roeId: unverifiedRoe, targetId: target.id, policyId: unverifiedPolicy,
+    });
     assert.equal(allowed.status, 201);
     const allowedBody = await allowed.json() as { run: { id: string } };
     createdRuns.push(allowedBody.run.id);
 
     const labRoe = await insertWorkflowRoe(owner.id, target.id, { labMode: true });
     createdRoes.push(labRoe);
-    const labRun = await client.request('/api/runs', 'POST', { roeId: labRoe, target: target.url });
+    const labPolicy = await insertWorkflowPolicy(owner.id, labRoe, target.id);
+    const labRun = await client.request('/api/runs', 'POST', {
+      roeId: labRoe, targetId: target.id, policyId: labPolicy,
+    });
     assert.equal(labRun.status, 201);
     createdRuns.push((await labRun.json() as { run: { id: string } }).run.id);
 
@@ -431,7 +609,10 @@ test('run creation requires approval, verified targets and an active scope windo
       endTime: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     });
     createdRoes.push(expiredRoe);
-    assert.equal((await client.request('/api/runs', 'POST', { roeId: expiredRoe, target: target.url })).status, 409);
+    const expiredPolicy = await insertWorkflowPolicy(owner.id, expiredRoe, target.id);
+    assert.equal((await client.request('/api/runs', 'POST', {
+      roeId: expiredRoe, targetId: target.id, policyId: expiredPolicy,
+    })).status, 409);
     assert.equal((await db.one<{ status: string }>('SELECT status FROM roe_documents WHERE id = $1', [expiredRoe]))?.status, 'expired');
   } finally {
     if (createdRuns.length) await db.run('DELETE FROM runs WHERE id = ANY($1::uuid[])', [createdRuns]);

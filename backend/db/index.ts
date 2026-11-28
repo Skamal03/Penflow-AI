@@ -49,6 +49,8 @@ export async function migrate(): Promise<void> {
     resolve(here, 'migrations/005_report_json.sql'),
     resolve(here, 'migrations/006_roe_validation.sql'),
     resolve(here, 'migrations/007_report_generated_at.sql'),
+    resolve(here, 'migrations/008_scope_policies.sql'),
+    resolve(here, 'migrations/009_scope_tool_settings.sql'),
   ];
   for (const [index, path] of migrations.entries()) {
     const version = index + 1;

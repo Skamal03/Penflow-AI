@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { authenticate, type SessionUser } from './auth/deps.js';
 import { assertJwtSecret } from './auth/jwt.js';
 import api from './routes/api.js';
+import internalApi from './routes/internal.js';
 
 assertJwtSecret();
 
@@ -78,6 +79,7 @@ app.use('/api/auth', (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
 });
+app.use('/api/internal', internalApi);
 app.use('/api', (req, res, next) => {
   if (publicRoutes.has(`${req.method} ${req.path}`)) {
     next();

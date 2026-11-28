@@ -1,8 +1,8 @@
 import bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolveTxt } from 'node:dns/promises';
-import { dirname, resolve } from 'node:path';
+import { lookup, resolveTxt } from 'node:dns/promises';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
@@ -16,6 +16,7 @@ import { requireRole, requireVerified, type SessionUser } from '../auth/deps.js'
 import { clearAuthCookies, createSession, listSessions, revokeAllSessions, revokeSession, rotateSession } from '../auth/sessions.js';
 import { sendAccountExistsEmail, sendPasswordChangedEmail, sendPasswordResetEmail, sendVerificationEmail } from '../email/sender.js';
 import { checkOwnership, listEngineTools, validateRoe } from '../roe/validator-client.js';
+import { buildPolicy } from '../scope-guard/policy-client.js';
 
 const router = express.Router();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,17 +77,17 @@ const roeTransitions: Record<string, string[]> = {
   revoked: [],
 };
 
-async function changeRoeStatus(client: PoolClient, roeId: string, nextStatus: string, actor: string, detail: string): Promise<void> {
+async function changeRoeStatus(client: PoolClient, roeId: string, ownerId: string, nextStatus: string, actor: string, detail: string): Promise<void> {
   const roe = await client.query<{ owner_id: string; status: string }>(
-    'SELECT owner_id, status FROM roe_documents WHERE id = $1 FOR UPDATE',
-    [roeId],
+    'SELECT owner_id, status FROM roe_documents WHERE id = $1 AND owner_id = $2 FOR UPDATE',
+    [roeId, ownerId],
   );
   const current = roe.rows[0];
   if (!current) throw new Error('ROE not found while changing status.');
   if (!roeTransitions[current.status]?.includes(nextStatus)) {
     throw new Error(`Invalid ROE status transition: ${current.status} -> ${nextStatus}.`);
   }
-  await client.query('UPDATE roe_documents SET status = $1 WHERE id = $2', [nextStatus, roeId]);
+  await client.query('UPDATE roe_documents SET status = $1 WHERE id = $2 AND owner_id = $3', [nextStatus, roeId, ownerId]);
   await audit(current.owner_id, actor, 'roe_status_changed', roeId, `${current.status} -> ${nextStatus}: ${detail}`, false, null, client);
 }
 
@@ -139,14 +140,15 @@ async function runRoeValidation(roeId: string, ownerId: string, input: Record<st
   }
   await audit(ownerId, 'system', 'roe_validator_call', roeId, `ROE validation returned ${result.status}.`);
   await transaction(async (client) => {
-    await client.query('UPDATE roe_documents SET automated_decision = $1, reasons_json = $2, confidence = NULL WHERE id = $3', [
+    await client.query('UPDATE roe_documents SET automated_decision = $1, reasons_json = $2, confidence = NULL WHERE id = $3 AND owner_id = $4', [
       result.status,
       JSON.stringify(result.reasons),
       roeId,
+      ownerId,
     ]);
-    await changeRoeStatus(client, roeId, result.status === 'invalid' ? 'rejected' : 'ownership_pending', 'system', `Validator result: ${result.status}.`);
+    await changeRoeStatus(client, roeId, ownerId, result.status === 'invalid' ? 'rejected' : 'ownership_pending', 'system', `Validator result: ${result.status}.`);
     if (result.status === 'valid' && labMode) {
-      await changeRoeStatus(client, roeId, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.');
+      await changeRoeStatus(client, roeId, ownerId, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.');
     }
   });
   return result;
@@ -156,8 +158,8 @@ async function getOwnerValidationInput(ownerId: string, targetIds: string[], all
   const owner = await one<{ display_name: string; email: string }>('SELECT display_name, email FROM users WHERE id = $1', [ownerId]);
   if (!owner) throw new Error('ROE owner no longer exists.');
   const targets = await query<{ id: string; url: string; owner_id: string; status: string }>(
-    'SELECT id, url, owner_id, status FROM targets WHERE id = ANY($1::uuid[])',
-    [targetIds],
+    'SELECT id, url, owner_id, status FROM targets WHERE id = ANY($1::uuid[]) AND owner_id = $2',
+    [targetIds, ownerId],
   );
   if (targets.length !== targetIds.length || targets.some((target) => target.owner_id !== ownerId)) {
     throw new RoeInputError(404, 'One or more targets were not found.');
@@ -472,8 +474,8 @@ router.post('/roe', requireVerified, requireRole('requester'), upload.single('do
     return;
   }
   const targets = await query<{ id: string; url: string; status: string; owner_id: string }>(
-    'SELECT id, url, status, owner_id FROM targets WHERE id = ANY($1::uuid[])',
-    [targetIds],
+    'SELECT id, url, status, owner_id FROM targets WHERE id = ANY($1::uuid[]) AND owner_id = $2',
+    [targetIds, req.user!.id],
   );
   if (targets.length !== targetIds.length || targets.some((target) => target.owner_id !== req.user!.id)) {
     res.sendStatus(404);
@@ -503,7 +505,7 @@ router.post('/roe', requireVerified, requireRole('requester'), upload.single('do
     filePath,
     now(),
   ]);
-  await transaction((client) => changeRoeStatus(client, id, 'submitted', 'requester', 'ROE submitted for automated validation.'));
+  await transaction((client) => changeRoeStatus(client, id, req.user!.id, 'submitted', 'requester', 'ROE submitted for automated validation.'));
   const input = await getOwnerValidationInput(req.user!.id, targetIds, allowedTools, startTime, endTime);
   await runRoeValidation(id, req.user!.id, input, false);
   res.status(201).json({ roe: safeRoe(await one<Record<string, unknown>>('SELECT * FROM roe_documents WHERE id = $1 AND owner_id = $2', [id, req.user!.id]) as Record<string, unknown>) });
@@ -532,7 +534,7 @@ router.post('/roe/:id/submit', requireVerified, requireRole('requester'), route(
     }
     throw error;
   }
-  await transaction((client) => changeRoeStatus(client, roe.id, 'submitted', 'requester', 'ROE resubmitted for automated validation.'));
+  await transaction((client) => changeRoeStatus(client, roe.id, req.user!.id, 'submitted', 'requester', 'ROE resubmitted for automated validation.'));
   await runRoeValidation(roe.id, roe.owner_id, input, roe.lab_mode);
   res.json({ roe: safeRoe(await one<Record<string, unknown>>('SELECT * FROM roe_documents WHERE id = $1 AND owner_id = $2', [roe.id, req.user!.id]) as Record<string, unknown>) });
 }));
@@ -543,6 +545,134 @@ router.get('/roe/:id', requireRole('requester'), route(async (req, res) => {
   res.json({ roe: safeRoe(roe) });
 }));
 
+router.post('/roe/:id/policy', requireVerified, requireRole('requester', 'admin'), route(async (req, res) => {
+  const roe = req.user!.role === 'admin'
+    ? await one<{ id: string; owner_id: string; status: string; automated_decision: string; scope_token: string | null; file_path: string | null; target_ids_json: string; scope_json: string; lab_mode: boolean }>(
+      'SELECT * FROM roe_documents WHERE id = $1',
+      [req.params.id],
+    )
+    : await one<{ id: string; owner_id: string; status: string; automated_decision: string; scope_token: string | null; file_path: string | null; target_ids_json: string; scope_json: string; lab_mode: boolean }>(
+      'SELECT * FROM roe_documents WHERE id = $1 AND owner_id = $2',
+      [req.params.id, req.user!.id],
+    );
+  if (!roe) { res.sendStatus(404); return; }
+  if (roe.status !== 'approved' || !roe.scope_token || !['valid', 'passed'].includes(roe.automated_decision)) {
+    res.status(409).json({ error: 'An approved and validated ROE is required to build a scope policy.' });
+    return;
+  }
+  if (typeof req.body?.targetId !== 'string' || !validUuid(req.body.targetId)) {
+    res.status(400).json({ error: 'Provide a valid targetId from the approved ROE.' });
+    return;
+  }
+  const targetIds = parseRoeTargetIds(roe.target_ids_json);
+  if (!targetIds.includes(req.body.targetId)) { res.sendStatus(404); return; }
+  const target = await one<{ id: string; url: string; status: string }>(
+    'SELECT id, url, status FROM targets WHERE id = $1 AND owner_id = $2',
+    [req.body.targetId, roe.owner_id],
+  );
+  if (!target) { res.sendStatus(404); return; }
+  if (target.status !== 'verified') {
+    res.status(409).json({ error: 'The ROE target is no longer verified.' });
+    return;
+  }
+  const scope = parseStoredRoeScope(roe.scope_json);
+  if (!scope || !scope.targets.includes(target.url)) {
+    res.status(409).json({ error: 'The approved ROE scope is invalid or does not include this target.' });
+    return;
+  }
+  if (!roe.file_path) {
+    res.status(409).json({ error: 'The approved ROE document is unavailable.' });
+    return;
+  }
+  const documentPath = resolve(roe.file_path);
+  const documentRelativePath = relative(uploadDir, documentPath);
+  if (!documentRelativePath || documentRelativePath.startsWith('..') || isAbsolute(documentRelativePath)) {
+    res.status(409).json({ error: 'The stored ROE document path is invalid.' });
+    return;
+  }
+  let parsedTarget: URL;
+  try { parsedTarget = new URL(target.url); } catch { res.status(409).json({ error: 'The stored target URL is invalid.' }); return; }
+  if (!['http:', 'https:'].includes(parsedTarget.protocol) || parsedTarget.username || parsedTarget.password) {
+    res.status(409).json({ error: 'The stored target URL is invalid.' });
+    return;
+  }
+  const host = parsedTarget.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const resolvedIps = (await lookup(host, { all: true, verbatim: true })).map((entry) => entry.address);
+  const enabledTools = (await query<{ tool: string }>(
+    'SELECT tool FROM scope_tool_settings WHERE enabled = TRUE ORDER BY tool',
+  )).map((item) => item.tool);
+  const policy = await buildPolicy({
+    document_path: documentPath,
+    asked_tools: scope.allowed_tools,
+    enabled_tools: enabledTools,
+    target: {
+      url: target.url,
+      host,
+      port: parsedTarget.port ? Number(parsedTarget.port) : parsedTarget.protocol === 'https:' ? 443 : 80,
+      resolved_ips: [...new Set(resolvedIps)].sort(),
+      lab_mode: roe.lab_mode,
+    },
+    time_window: { start: scope.start_time, end: scope.end_time },
+  });
+  const policyId = newId();
+  const version = await transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [roe.id]);
+    const result = await client.query<{ version: number }>(
+      'SELECT COALESCE(MAX(version), 0) + 1 AS version FROM scope_policies WHERE roe_id = $1 AND user_id = $2',
+      [roe.id, roe.owner_id],
+    );
+    const nextVersion = result.rows[0]?.version;
+    if (!nextVersion) throw new Error('Could not allocate a scope policy version.');
+    await client.query(
+      `INSERT INTO scope_policies (id, roe_id, user_id, target_id, version, status, policy_json, policy_hash, created_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'active', $6::jsonb, $7, $8, $9)`,
+      [policyId, roe.id, roe.owner_id, target.id, nextVersion, JSON.stringify(policy), policy.policy_hash, req.user!.id, policy.time_window.end],
+    );
+    await audit(roe.owner_id, req.user!.role, 'scope_policy_created', policyId, `Active scope policy version ${nextVersion} created for ROE ${roe.id}.`, false, null, client);
+    return nextVersion;
+  });
+  res.status(201).json({ policyId, version, policy });
+}));
+
+router.get('/roe/:id/policy', requireRole('requester', 'admin'), route(async (req, res) => {
+  const roe = req.user!.role === 'admin'
+    ? await one<{ id: string; owner_id: string }>('SELECT id, owner_id FROM roe_documents WHERE id = $1', [req.params.id])
+    : await one<{ id: string; owner_id: string }>('SELECT id, owner_id FROM roe_documents WHERE id = $1 AND owner_id = $2', [req.params.id, req.user!.id]);
+  if (!roe) { res.sendStatus(404); return; }
+  const policyId = req.query.policyId;
+  if (typeof policyId !== 'string' || !validUuid(policyId)) {
+    res.status(400).json({ error: 'Provide a policyId to retrieve one exact policy version.' });
+    return;
+  }
+  const policy = await one(
+    'SELECT id, roe_id, user_id, target_id, version, status, policy_json, policy_hash, created_by, created_at, expires_at FROM scope_policies WHERE id = $1 AND roe_id = $2 AND user_id = $3',
+    [policyId, roe.id, roe.owner_id],
+  );
+  if (!policy) { res.sendStatus(404); return; }
+  res.json({ policy });
+}));
+
+router.post('/roe/:id/policy/revoke', requireRole('admin'), route(async (req, res) => {
+  const roe = await one<{ id: string; owner_id: string }>('SELECT id, owner_id FROM roe_documents WHERE id = $1', [req.params.id]);
+  if (!roe) { res.sendStatus(404); return; }
+  const policyId = req.body?.policyId;
+  if (typeof policyId !== 'string' || !validUuid(policyId)) {
+    res.status(400).json({ error: 'Provide the exact policyId to revoke.' });
+    return;
+  }
+  const policy = await one<{ id: string; status: string }>(
+    'SELECT id, status FROM scope_policies WHERE id = $1 AND roe_id = $2 AND user_id = $3',
+    [policyId, roe.id, roe.owner_id],
+  );
+  if (!policy) { res.sendStatus(404); return; }
+  if (policy.status === 'revoked') { res.status(409).json({ error: 'This scope policy is already revoked.' }); return; }
+  await transaction(async (client) => {
+    await client.query("UPDATE scope_policies SET status = 'revoked' WHERE id = $1 AND roe_id = $2 AND user_id = $3", [policy.id, roe.id, roe.owner_id]);
+    await audit(roe.owner_id, 'admin', 'scope_policy_revoked', policy.id, `Scope policy for ROE ${roe.id} revoked by admin.`, false, null, client);
+  });
+  res.json({ policyId: policy.id, status: 'revoked' });
+}));
+
 router.post('/roe/:id/verification', requireRole('requester'), route(async (req, res) => {
   const roe = await one<{ id: string; owner_id: string; status: string; target_ids_json: string; lab_mode: boolean }>(
     'SELECT * FROM roe_documents WHERE id = $1 AND owner_id = $2',
@@ -551,7 +681,7 @@ router.post('/roe/:id/verification', requireRole('requester'), route(async (req,
   if (!roe) { res.sendStatus(404); return; }
   if (roe.lab_mode) {
     if (roe.status === 'ownership_pending') {
-      await transaction((client) => changeRoeStatus(client, roe.id, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.'));
+      await transaction((client) => changeRoeStatus(client, roe.id, roe.owner_id, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.'));
     }
     res.json({ status: 'review_pending', message: 'Lab-mode ROE does not require ownership verification.' });
     return;
@@ -562,8 +692,8 @@ router.post('/roe/:id/verification', requireRole('requester'), route(async (req,
   }
   const targetIds = parseRoeTargetIds(roe.target_ids_json);
   const targets = await query<{ id: string; url: string; owner_id: string }>(
-    'SELECT id, url, owner_id FROM targets WHERE id = ANY($1::uuid[])',
-    [targetIds],
+    'SELECT id, url, owner_id FROM targets WHERE id = ANY($1::uuid[]) AND owner_id = $2',
+    [targetIds, req.user!.id],
   );
   if (targets.length !== targetIds.length || targets.some((target) => target.owner_id !== req.user!.id)) {
     res.sendStatus(404);
@@ -607,7 +737,7 @@ router.post('/roe/:id/verify', requireRole('requester'), route(async (req, res) 
   if (!roe) { res.sendStatus(404); return; }
   if (roe.lab_mode) {
     if (roe.status === 'ownership_pending') {
-      await transaction((client) => changeRoeStatus(client, roe.id, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.'));
+      await transaction((client) => changeRoeStatus(client, roe.id, roe.owner_id, 'review_pending', 'system', 'Lab-mode ROE skips ownership verification.'));
     }
     res.json({ status: 'review_pending', message: 'Lab-mode ROE does not require ownership verification.' });
     return;
@@ -618,8 +748,8 @@ router.post('/roe/:id/verify', requireRole('requester'), route(async (req, res) 
   }
   const targetIds = parseRoeTargetIds(roe.target_ids_json);
   const targets = await query<{ id: string; url: string; owner_id: string }>(
-    'SELECT id, url, owner_id FROM targets WHERE id = ANY($1::uuid[])',
-    [targetIds],
+    'SELECT id, url, owner_id FROM targets WHERE id = ANY($1::uuid[]) AND owner_id = $2',
+    [targetIds, req.user!.id],
   );
   if (targets.length !== targetIds.length || targets.some((target) => target.owner_id !== req.user!.id)) {
     res.sendStatus(404);
@@ -665,17 +795,17 @@ router.post('/roe/:id/verify', requireRole('requester'), route(async (req, res) 
     return;
   }
   await transaction(async (client) => {
-    await changeRoeStatus(client, roe.id, 'ownership_verified', 'system', 'All target ownership proofs were verified.');
-    await changeRoeStatus(client, roe.id, 'review_pending', 'system', 'Ownership verification completed.');
+    await changeRoeStatus(client, roe.id, roe.owner_id, 'ownership_verified', 'system', 'All target ownership proofs were verified.');
+    await changeRoeStatus(client, roe.id, roe.owner_id, 'review_pending', 'system', 'Ownership verification completed.');
   });
   res.json({ status: 'review_pending', message: 'All targets were verified. The ROE is waiting for review.' });
 }));
 
-router.get('/review', requireRole('reviewer', 'admin'), route(async (_req, res) => {
+router.get('/review', requireRole('admin'), route(async (_req, res) => {
   res.json({ queue: await query(`SELECT r.*, u.display_name AS owner_name, u.email AS owner_email FROM roe_documents r JOIN users u ON u.id = r.owner_id WHERE r.status = 'review_pending' ORDER BY r.uploaded_at`) });
 }));
 
-router.post('/review/:id', requireRole('reviewer'), route(async (req, res) => {
+router.post('/review/:id', requireRole('admin'), route(async (req, res) => {
   const { decision, reason } = req.body ?? {};
   if (!['approve', 'reject'].includes(decision) || typeof reason !== 'string' || !reason.trim()) {
     res.status(400).json({ error: 'Choose approve or reject and provide a reason.' });
@@ -687,7 +817,7 @@ router.post('/review/:id', requireRole('reviewer'), route(async (req, res) => {
   const nextStatus = decision === 'approve' ? 'approved' : 'rejected';
   const scopeToken = decision === 'approve' ? randomBytes(32).toString('hex') : null;
   await transaction(async (client) => {
-    await changeRoeStatus(client, roe.id, nextStatus, 'reviewer', `${decision}: ${reason.trim().slice(0, 2000)}`);
+    await changeRoeStatus(client, roe.id, roe.owner_id, nextStatus, req.user!.role, `${decision}: ${reason.trim().slice(0, 2000)}`);
     await client.query('UPDATE roe_documents SET reviewer_id = $1, decision = $2, note = $3, reasons_json = $4, decided_at = $5, scope_token = $6, scope_token_issued_at = $7 WHERE id = $8', [
       req.user!.id, decision, reason.trim().slice(0, 2000), decision === 'reject' ? JSON.stringify([reason.trim().slice(0, 2000)]) : '[]', now(), scopeToken, scopeToken ? now() : null, roe.id,
     ]);
@@ -701,14 +831,23 @@ router.get('/runs', requireRole('requester'), route(async (req, res) => {
 
 router.post('/runs', requireVerified, requireRole('requester'), route(async (req, res) => {
   const roeId = req.body?.roeId;
-  const target = req.body?.target;
-  const roe = typeof roeId === 'string' ? await one<{ id: string; owner_id: string; scope_json: string; status: string; scope_token: string | null; target_ids_json: string; lab_mode: boolean }>(
+  const targetId = req.body?.targetId;
+  const policyId = req.body?.policyId;
+  const roe = typeof roeId === 'string' ? await one<{ id: string; owner_id: string; scope_json: string; status: string; automated_decision: string; scope_token: string | null; target_ids_json: string; lab_mode: boolean }>(
     'SELECT * FROM roe_documents WHERE id = $1 AND owner_id = $2',
     [roeId, req.user!.id],
   ) : undefined;
   if (!roe) { res.sendStatus(404); return; }
-  if (roe.status !== 'approved' || !roe.scope_token) {
+  if (roe.status !== 'approved' || !roe.scope_token || !['valid', 'passed'].includes(roe.automated_decision)) {
     res.status(409).json({ error: 'An approved Rules of Engagement document is required before a test can start.' });
+    return;
+  }
+  if (typeof policyId !== 'string' || !validUuid(policyId)) {
+    res.status(409).json({ error: 'An active scope policy is required before a test can start.' });
+    return;
+  }
+  if (typeof targetId !== 'string' || !validUuid(targetId)) {
+    res.status(400).json({ error: 'Choose a verified target from the approved ROE.' });
     return;
   }
   const scope = parseStoredRoeScope(roe.scope_json);
@@ -724,25 +863,43 @@ router.post('/runs', requireVerified, requireRole('requester'), route(async (req
     return;
   }
   if (currentTime >= endTime) {
-    await transaction((client) => changeRoeStatus(client, roe.id, 'expired', 'system', 'Authorization window ended before the run started.'));
+    await transaction((client) => changeRoeStatus(client, roe.id, roe.owner_id, 'expired', 'system', 'Authorization window ended before the run started.'));
     res.status(409).json({ error: 'The ROE authorization window has ended; the ROE was marked expired.' });
     return;
   }
-  if (typeof target !== 'string' || !scope.targets.includes(target)) {
+  const targetIds = parseRoeTargetIds(roe.target_ids_json);
+  if (!targetIds.includes(targetId)) { res.sendStatus(404); return; }
+  const roeTargets = await query<{ id: string; url: string; owner_id: string; status: string }>(
+    'SELECT id, url, owner_id, status FROM targets WHERE id = $1 AND owner_id = $2',
+    [targetId, req.user!.id],
+  );
+  const selectedTarget = roeTargets[0];
+  if (!selectedTarget) { res.sendStatus(404); return; }
+  if (!scope.targets.includes(selectedTarget.url)) {
     res.status(409).json({ error: 'Choose a target included in this ROE.' });
     return;
   }
-  const targetIds = parseRoeTargetIds(roe.target_ids_json);
-  const roeTargets = await query<{ id: string; url: string; owner_id: string; status: string }>(
-    'SELECT id, url, owner_id, status FROM targets WHERE id = ANY($1::uuid[])',
-    [targetIds],
-  );
-  if (roeTargets.length !== targetIds.length || roeTargets.some((item) => item.owner_id !== req.user!.id)) {
-    res.status(409).json({ error: 'One or more ROE targets are no longer available to this account.' });
+  if (selectedTarget.status !== 'verified') {
+    res.status(409).json({ error: 'The selected target is not a verified target in this ROE.' });
     return;
   }
-  if (!roeTargets.some((item) => item.url === target) || roeTargets.some((item) => item.status !== 'verified')) {
-    res.status(409).json({ error: 'The selected target is not a verified target in this ROE.' });
+  const policy = await one<{ id: string; target_id: string; status: string; expires_at: Date; policy_json: { time_window?: { start?: string; end?: string } } }>(
+    'SELECT id, target_id, status, expires_at, policy_json FROM scope_policies WHERE id = $1 AND roe_id = $2 AND user_id = $3',
+    [policyId, roe.id, req.user!.id],
+  );
+  if (!policy) { res.sendStatus(404); return; }
+  if (policy.status !== 'active' || policy.expires_at.getTime() <= currentTime) {
+    res.status(409).json({ error: 'The scope policy is revoked or expired.' });
+    return;
+  }
+  const policyStart = Date.parse(policy.policy_json.time_window?.start ?? '');
+  const policyEnd = Date.parse(policy.policy_json.time_window?.end ?? '');
+  if (!Number.isFinite(policyStart) || !Number.isFinite(policyEnd) || currentTime < policyStart || currentTime >= policyEnd) {
+    res.status(409).json({ error: 'The scope policy authorization window is invalid or inactive.' });
+    return;
+  }
+  if (policy.target_id !== selectedTarget.id) {
+    res.status(409).json({ error: 'The selected target does not match the active scope policy.' });
     return;
   }
   if (!roe.lab_mode) {
@@ -756,8 +913,8 @@ router.post('/runs', requireVerified, requireRole('requester'), route(async (req
     }
   }
   const id = newId();
-  await run('INSERT INTO runs (id, owner_id, roe_id, status, stage, started_at, scope_json) VALUES ($1, $2, $3, $4, $5, $6, $7)', [id, req.user!.id, roe.id, 'running', 'recon', now(), JSON.stringify([target])]);
-  await audit(req.user!.id, 'requester', 'run_started', id, `Run started against ${target} within the approved ROE scope.`, false, id);
+  await run('INSERT INTO runs (id, owner_id, roe_id, policy_id, target_id, status, stage, started_at, scope_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [id, req.user!.id, roe.id, policy.id, selectedTarget.id, 'running', 'recon', now(), JSON.stringify([selectedTarget.url])]);
+  await audit(req.user!.id, 'requester', 'run_started', id, `Run started against ${selectedTarget.url} within the approved ROE scope.`, false, id);
   res.status(201).json({ run: await one('SELECT * FROM runs WHERE id = $1 AND owner_id = $2', [id, req.user!.id]), simulated: true });
 }));
 
@@ -901,7 +1058,31 @@ router.get('/admin/users', requireRole('admin'), route(async (_req, res) => {
   });
 }));
 
-router.get('/admin/tools', requireRole('admin'), (_req, res) => res.json({ tools: [{ name: 'Scope Guard', status: 'in progress' }, { name: 'Recon adapter', status: 'planned' }, { name: 'Scan engine', status: 'not connected' }] }));
+router.get('/admin/tools', requireRole('admin'), route(async (_req, res) => {
+  const names = await listEngineTools();
+  const settings = await query<{ tool: string; enabled: boolean }>('SELECT tool, enabled FROM scope_tool_settings');
+  const enabled = new Map(settings.map((setting) => [setting.tool, setting.enabled]));
+  res.json({ tools: names.map((name) => ({ name, enabled: enabled.get(name) ?? false })) });
+}));
+router.put('/admin/tools/:name', requireRole('admin'), route(async (req, res) => {
+  const name = typeof req.params.name === 'string' ? req.params.name : '';
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be a boolean.' });
+    return;
+  }
+  if (!(await listEngineTools()).includes(name)) { res.sendStatus(404); return; }
+  const changed = await run(
+    'UPDATE scope_tool_settings SET enabled = $1, updated_by = $2, updated_at = $3 WHERE tool = $4',
+    [enabled, req.user!.id, now(), name],
+  );
+  if (!changed) { res.sendStatus(404); return; }
+  await audit(req.user!.id, 'admin', 'scope_tool_toggled', name, `Tool enabled set to ${enabled}.`);
+  res.json({ tool: { name, enabled } });
+}));
+router.get('/admin/scope-policies', requireRole('admin'), route(async (_req, res) => {
+  res.json({ policies: await query('SELECT id, roe_id, user_id, target_id, version, status, policy_json, policy_hash, created_by, created_at, expires_at FROM scope_policies ORDER BY created_at DESC') });
+}));
 router.get('/admin/models', requireRole('admin'), (_req, res) => res.json({ models: [{ name: 'GPT-OSS', status: 'not connected' }, { name: 'Risk scorer', status: 'simulated data only' }] }));
 router.get('/admin/audit-log', requireRole('admin'), route(async (_req, res) => { res.json({ events: await query('SELECT * FROM audit_events ORDER BY created_at DESC') }); }));
 
@@ -924,20 +1105,23 @@ router.post('/admin/roe/:id/lab-mode', requireRole('admin'), route(async (req, r
     await client.query('UPDATE roe_documents SET lab_mode = $1 WHERE id = $2', [labMode, roe.id]);
     await audit(roe.owner_id, 'admin', 'roe_lab_mode_changed', roe.id, `Lab mode set to ${labMode}.`, false, null, client);
     if (labMode && roe.status === 'ownership_pending') {
-      await changeRoeStatus(client, roe.id, 'review_pending', 'admin', 'Lab-mode ROE skips ownership verification.');
+      await changeRoeStatus(client, roe.id, roe.owner_id, 'review_pending', 'admin', 'Lab-mode ROE skips ownership verification.');
     } else if (!labMode && roe.status === 'review_pending') {
-      await changeRoeStatus(client, roe.id, 'ownership_pending', 'admin', 'Lab mode disabled; ownership verification is required.');
+      await changeRoeStatus(client, roe.id, roe.owner_id, 'ownership_pending', 'admin', 'Lab mode disabled; ownership verification is required.');
     }
   });
   res.json({ roe: safeRoe(await one<Record<string, unknown>>('SELECT * FROM roe_documents WHERE id = $1', [roe.id]) as Record<string, unknown>) });
 }));
 
 router.post('/admin/roe/:id/revoke', requireRole('admin'), route(async (req, res) => {
-  const roe = await one<{ id: string; status: string }>('SELECT id, status FROM roe_documents WHERE id = $1', [req.params.id]);
+  const roe = await one<{ id: string; owner_id: string; status: string }>('SELECT id, owner_id, status FROM roe_documents WHERE id = $1', [req.params.id]);
   if (!roe) { res.sendStatus(404); return; }
   if (roe.status === 'revoked') { res.status(409).json({ error: 'This ROE is already revoked.' }); return; }
   const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 2000) : '';
-  await transaction((client) => changeRoeStatus(client, roe.id, 'revoked', 'admin', reason || 'Revoked by admin.'));
+  await transaction(async (client) => {
+    await changeRoeStatus(client, roe.id, roe.owner_id, 'revoked', 'admin', reason || 'Revoked by admin.');
+    await client.query("UPDATE scope_policies SET status = 'revoked' WHERE roe_id = $1 AND user_id = $2 AND status = 'active'", [roe.id, roe.owner_id]);
+  });
   res.json({ roe: safeRoe(await one<Record<string, unknown>>('SELECT * FROM roe_documents WHERE id = $1', [roe.id]) as Record<string, unknown>) });
 }));
 

@@ -25,7 +25,7 @@ ROE Checker → Scope Guard → Testing Agent (+Logger) → Risk Scorer → Repo
 | Pipeline Stage | Status | File(s) |
 |---|---|---|
 | **ROE Checker** (ROE fraud/tampering detection) | **MISSING** — slot exists in DB (`automated_decision = 'not_connected'`), upload endpoint stores documents, but no detection algorithm runs. The planned approach is a custom fraud-detection algorithm (not RandomForest, which is reserved for Risk Scoring). | `backend/routes/api.ts` (upload + manual review queue only) |
-| **Scope Guard** (blocks out-of-scope tool calls) | **PARTIAL** — temporary hostname allowlist in `tool_registry.py`; not ROE-driven, not a central wrapper | `core/tools/tool_registry.py` → `check_scope()`, env var `PENFLOW_ALLOWED_HOSTS` |
+| **Scope Guard** (blocks out-of-scope tool calls) | **PARTIAL** — run-bound policy loading and guarded nmap/passive-ZAP dispatch are implemented; other tools remain unsupported. `check_scope()` remains as a secondary local-host guard. | `core/scope_guard/`, `core/tools/tool_registry.py`, `backend/routes/internal.ts` |
 | **Testing Agent** | **PARTIAL** — ReAct loop exists, calls tools in fixed order, calls LLM for plain-language summaries of medium/high/critical findings; does NOT use LLM for tool selection decisions | `core/agent/react_loop.py`, `core/agent/llm_client.py` |
 | **Logger** | **DONE** — writes timestamped JSONL log per run | `core/logging_system/action_logger.py` |
 | **Risk Scorer** | **MISSING** — planned as a RandomForest classifier that predicts severity from finding features and correlates with CVE/NVD and CISA KEV data. Findings currently carry a raw `risk` string from tool wrappers; DB columns `risk_score`, `score_rationale`, `cve_id`, `actively_exploited` exist but are not populated by the engine. | `core/tools/tool_registry.py` (`finding()` helper), `backend/db/migrations/001_initial.sql` (schema) |
@@ -69,7 +69,14 @@ e:\PENFLOW AI\
 │   │       ├── 001_initial.sql  # All core tables: users, sessions, targets, roe_documents, runs, findings, reports, audit_events, waitlist, plan_change_requests, password_reset_tokens
 │   │       ├── 002_verification.sql
 │   │       ├── 003_email_tokens.sql
-│   │       └── 004_auth_hardening.sql  # is_active, failed_attempts, locked_until, session hardening
+│   │       ├── 004_auth_hardening.sql  # is_active, failed_attempts, locked_until, session hardening
+│   │       ├── 005_report_json.sql
+│   │       ├── 006_roe_validation.sql
+│   │       ├── 007_report_generated_at.sql
+│   │       ├── 008_scope_policies.sql # Versioned policies, run bindings, and tool-call audit log
+│   │       └── 009_scope_tool_settings.sql # Admin-controlled enabled tool catalog
+│   ├── scope-guard/
+│   │   └── policy-client.ts     # Invokes and validates the Python policy builder
 │   ├── email/
 │   │   ├── sender.ts            # nodemailer SMTP sender (fire-and-forget)
 │   │   └── templates.ts         # HTML+plain-text email templates
@@ -91,6 +98,7 @@ e:\PENFLOW AI\
 │   ├── agent/
 │   │   ├── llm_client.py        # Groq API wrapper; MODEL env var defaults to openai/gpt-oss-120b
 │   │   └── react_loop.py        # Main tool-execution loop; calls LLM for finding summaries
+│   ├── scope_guard/             # ROE Rules extraction, restrictive policy building, and schema
 │   ├── logging_system/
 │   │   ├── action_logger.py     # Writes per-run JSONL log to logging_system/logs/
 │   │   └── logs/                # Run logs (gitignored)
@@ -195,9 +203,10 @@ bash scripts/start_all.sh
 # The engine runs on Windows; shell.py tunnels tool binaries through WSL automatically.
 cd core
 .\.venv\Scripts\Activate.ps1      # activate Windows venv (PowerShell)
-python main.py --target http://127.0.0.1:3000           # full run against Juice Shop
-python main.py --target http://127.0.0.1:3000 --dry-run # fake tool data, real LLM + report
-python main.py --target http://127.0.0.1:3000 --only zap,nmap  # run specific tools only
+# Set PENFLOW_SERVICE_TOKEN securely to the backend's configured service token.
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID --dry-run
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID --only zap,nmap
 python check_tools.py                                   # verify which tools are reachable
 
 # --- Backend API (Windows PowerShell, from backend/) ---
@@ -220,7 +229,7 @@ docker compose up -d   # start Postgres + Mailpit
 
 ## 5. Tools List
 
-All tools live in `core/tools/`. Each wrapper registers itself with the `@register` decorator in `tool_registry.py`. Tools run via `run_tool(name, target_url=...)` which calls `check_scope()` first.
+All tools live in `core/tools/`. Each wrapper registers itself with the `@register` decorator in `tool_registry.py`. Engine dispatch goes through `ScopeGuard.run()`, which validates the run policy before calling `run_tool()` and its secondary `check_scope()` guard.
 
 **9 tool wrappers exist** in `core/tools/big_tools/` and `core/tools/custom_scripts/`. **8 appear in `TOOL_ORDER`** (the fixed execution list in `react_loop.py`). `nikto_wrapper.py` is registered with `@register` and callable via `run_tool("nikto", ...)` but is **not included in `TOOL_ORDER`** — it will not run in a normal engine pass unless added there.
 
@@ -234,7 +243,7 @@ All tools live in `core/tools/`. Each wrapper registers itself with the `@regist
 | 4 | `ffuf` | enumeration | Yes | Yes | Directory/file discovery with wordlist `/usr/share/wordlists/dirb/common.txt`; flags sensitive paths | `ffuf` |
 | 5 | `header_checks` | vulnerability_assessment | No | Yes | Python requests call; checks for missing X-Frame-Options, CSP, HSTS, X-Content-Type-Options; checks HttpOnly on cookies | None (pure Python) |
 | 6 | `nuclei` | vulnerability_assessment | Yes | Yes | Template-based detection; tags: `exposure,misconfig,tech`; excludes `dos,fuzz,intrusive`; no interactsh | `nuclei` |
-| 7 | `zap` | vulnerability_assessment | Yes | Yes | ZAP spider + passive scan + active scan; uses context scoped to target origin; communicates via ZAP REST API at `ZAP_API_URL` (default `http://127.0.0.1:8080`) | None (HTTP client) |
+| 7 | `zap` | vulnerability_assessment | No | Yes | Runtime guard permits a single-page, in-scope spider + passive scan only; no active scan | None (HTTP client) |
 | 8 | `sqlmap` | validation | Yes | **No** | SQL injection verification; needs a URL with query params; must be explicitly enabled via `PENFLOW_ENABLED_TOOLS=sqlmap` | `sqlmap` |
 
 **Registered but NOT in TOOL_ORDER:**
@@ -243,13 +252,14 @@ All tools live in `core/tools/`. Each wrapper registers itself with the `@regist
 |---|---|---|---|
 | `nikto` | vulnerability_assessment | Web server misconfiguration and outdated component checks; parses JSON output | `nikto` |
 
-**How to call a tool directly** (from Python inside `core/`):
+**How to call a guarded tool directly** (from Python inside `core/`):
 ```python
-from tools.tool_registry import run_tool
-findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
+from scope_guard.tool_wrapper import ScopeGuard
+guard = ScopeGuard(run_id)
+findings = guard.run("nmap", {"target_url": "http://127.0.0.1:3000"})
 ```
 
-**Dry-run mode**: set env var `DRY_RUN=true` or pass `--dry-run` to `main.py`. Every tool returns fake findings instead of running the binary.
+**Dry-run mode**: pass `--dry-run` to `main.py`. It still requires a running backend run and active scope policy; guarded nmap/ZAP return fake findings.
 
 **WSL distro**: controlled by env var `PENFLOW_WSL_DISTRO` (default: `kali-linux`).
 
@@ -277,17 +287,21 @@ findings = run_tool("nmap", target_url="http://127.0.0.1:3000")
 | `CORS_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173` |
 | `COOKIE_SECURE` | `false` (set to `true` in production) |
 | `APP_BASE_URL` | `http://127.0.0.1:5173` (used in email links) |
+| `PENFLOW_PYTHON` | (empty; policy builder uses `core/.venv` by default, or set a Python executable path) |
 | `SMTP_HOST` | `127.0.0.1` |
 | `SMTP_PORT` | `1025` (Mailpit) |
 | `SMTP_USER` | (empty) |
 | `SMTP_PASSWORD` | (empty) |
 | `SMTP_FROM` | `PenflowAI <no-reply@penflow.local>` |
 | `SMTP_STARTTLS` | `false` |
+| `PENFLOW_SERVICE_TOKEN` | Shared engine-to-backend bearer secret; configure securely in the backend and engine process |
 
 ### Engine env vars (set in shell before running `main.py`)
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `PENFLOW_API_URL` | `http://127.0.0.1:4000/api` | Backend API base URL used by the engine's policy and audit client |
+| `PENFLOW_SERVICE_TOKEN` | (required; minimum 32 bytes) | Shared engine-to-backend bearer secret; set securely and never log |
 | `PENFLOW_LLM_MODEL` | `openai/gpt-oss-120b` | LLM model name passed to Groq |
 | `PENFLOW_ALLOWED_HOSTS` | `127.0.0.1,localhost` | Comma-separated hostnames the scope guard allows |
 | `PENFLOW_DISABLED_TOOLS` | (empty) | Comma-separated tool names to disable |
@@ -368,13 +382,13 @@ Each finding: `id` (sha256 of `tool|name|url`), `name, tool, url, severity, seve
 ### CLI flags (`core/main.py`)
 
 ```powershell
-python main.py --target http://127.0.0.1:3000              # scan + AI report (cached)
-python main.py --target http://127.0.0.1:3000 --no-ai      # zero tokens
-python main.py --target http://127.0.0.1:3000 --refresh-ai # ignore the AI cache
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID              # scan + AI report (cached)
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID --no-ai      # zero tokens
+python main.py --target http://127.0.0.1:3000 --run-id $env:PENFLOW_RUN_ID --refresh-ai # ignore the AI cache
 python main.py --report-from core/reports/<run_id>/report.json  # rebuild HTML/MD only, no scan
 ```
 
-`--dry-run` and `--only` unchanged. **Stdout contract unchanged**: findings JSON only; progress and report paths go to stderr (`[*] report saved: …report.html`).
+Scans require a real database run UUID and a valid `PENFLOW_SERVICE_TOKEN`; missing, expired, revoked, mismatched, or disabled policies fail closed. `--only` can further restrict the tools selected by policy. **Stdout contract unchanged**: findings JSON only; progress and report paths go to stderr (`[*] report saved: …report.html`).
 
 ### Backend integration plan (Phase 3 — documented only, NOT built)
 
@@ -435,7 +449,7 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 4. **Do not change the LLM setup.** The model is `openai/gpt-oss-120b` via Groq. Do not swap the provider, change the model name, or change `core/agent/llm_client.py` without explicit instruction. The model choice is documented and defensible for the FYP.
 5. **Keep changes small.** Edit only the files the task requires. Do not reformat or refactor code outside the task scope. Minimal diffs only.
 6. **Do not delete existing files** unless you created them in this task and they are now unused. Check all imports before deleting anything. Never delete migrations, lockfiles, Documentation/, or `.env.example`.
-7. **Scope Guard must stay in the tool path.** Every tool call must go through `run_tool()` in `tool_registry.py`, which calls `check_scope()`. Never call a tool wrapper function directly in a way that skips scope checking.
+7. **Scope Guard must stay in the tool path.** Every engine tool dispatch must go through `ScopeGuard.run()`, which rebuilds safe arguments before calling `run_tool()` and `check_scope()`. Never call a tool wrapper function directly in a way that skips scope checking.
 8. **Backend and engine are not wired together yet.** Do not assume that creating a run via the web UI triggers the Python engine. They are separate systems at this stage.
 9. **Out of scope for this FYP.** Do not implement or plan: IDOR/BOLA detection, CI/CD pipeline integration, multi-agent orchestration, or any testing against live company/internet sites. These are explicitly listed as post-FYP future work in `Documentation/PHASES.md`.
 10. **Detection logic must be custom, not only tool integration.** The FYP differentiator is custom algorithms (ROE fraud detection, risk scoring with CVE/CISA KEV correlation). Do not substitute these with a simple call to an existing tool. Tool wrappers feed raw data; the custom logic processes it.
@@ -452,6 +466,7 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 - **Core engine — Logger**: `core/logging_system/action_logger.py` writes per-run JSONL logs. Existing log files in `logging_system/logs/` confirm it has been run.
 - **Core engine — Report Writer**: built Nov 2026 in `core/reporting/` (see section 6A). One scan -> `core/reports/<run_id>/report.json` (source of truth) + `report.html` (standalone, print-to-PDF) + `report.md`. Token-frugal AI text with a disk cache and static fallback. Old `core/report.py` is a thin shim. Tests: `python reporting/test_reporting.py` (85 checks, all green).
 - **Core — ROE Validator module**: `core/roe_validator/` validates ROE fields, dates, blocked/private targets, and ownership tokens via DNS, a well-known file, or homepage meta. It is standalone: no DB/auth, no scan-logic changes, and no caller sets `lab_mode` by default.
+- **Scope Guard — steps 1–3**: the policy builder/API bind restrictive policies to the owner, ROE, verified target, and run. The engine now loads the exact run policy through the service-authenticated backend API, checks its schema/hash/window/target, applies current admin tool toggles, and audits each allow/block. The first adapters are nmap (pinned IP and target port, reconstructed flags) and passive single-page ZAP; other tools are not dispatched by the guarded engine.
 - **Backend — Auth system**: full auth stack done: registration, email verification, login with lockout, JWT access + refresh tokens, session management, password reset, rate limiting, RBAC, CSRF protection, security headers, audit logging. 4 DB migrations applied. Email verification and password reset: implemented, not verified end-to-end.
 - **Backend — ROE workflow**: migration 006, Python validator bridge, validation/submission, per-target ownership verification, reviewer decisions, admin lab-mode/revocation controls, and run gating are implemented. The frontend now collects tools and authorization windows and limits run targets to approved ROE scope. Typechecks and isolated bridge tests pass; DB-backed workflow tests require `TEST_DATABASE_URL` and were not run.
 - **Backend — API endpoints**: targets, ROE documents (upload + manual review queue), runs (simulated), findings, reports, billing (simulated), admin views all wired.
@@ -467,13 +482,13 @@ Goal: the engine's `report.json` becomes the single stored artefact, linked to t
 
 ### Next Task
 
-Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts` with the database run UUID and timestamp-named report folder. No completion endpoint or automatic caller is currently wired; the ROE Validator is also intentionally not integrated into scan logic.
+Await user approval before the next Scope Guard step. Runtime enforcement currently supports only guarded nmap and passive single-page ZAP; expanding adapters requires separate approval. Report ingestion from the engine remains a separate unwired task.
 
 ### Known Issues
 
-- **ROE automated analysis not connected**: every uploaded ROE document is saved with `automated_decision = 'not_connected'` and goes straight to manual review. The fraud-detection algorithm is not built.
+- **ROE automated analysis not connected**: every uploaded ROE document is saved with `automated_decision = 'not_connected'` and goes straight to manual review. The fraud-detection algorithm is not built; the current validator does not determine document authenticity.
 - **Risk Scorer not built**: findings have no numeric `risk_score` from a model; the DB columns exist but are unused by the engine.
-- **Scope Guard is temporary**: `check_scope()` only checks hostnames against an env-var allowlist; it is not driven by the approved ROE scope token from the database.
+- **Scope Guard adapter coverage is intentionally limited**: only nmap and passive single-page ZAP are supported by the engine dispatcher; other tools are not run. ZAP's classic spider remains unsuitable for crawling the Juice Shop SPA. Engine-to-report ingestion is not wired.
 - **Backend has a stale SQLite file**: `backend/data/penflow.db` exists but the real database is Postgres. The SQLite file should not be used.
 - **`.pgverify/` in repo root**: an untracked embedded-Postgres data directory; not in `.gitignore` by name. `AUTH_PROGRESS.md` notes old SQLite files in `backend/data/` as a cleanup item.
 - **ZAP with Juice Shop (SPA)**: `zap_wrapper.py` notes that the classic ZAP spider can't crawl single-page apps like Juice Shop — the AJAX spider would be needed.
@@ -488,6 +503,11 @@ Connect the external engine/orchestrator to `backend/reporting/ingest-report.ts`
 - 2026-11-28 — Added the standalone ROE Validator and 13 mocked network/validation tests; existing `check_scope()` and scan logic were not changed. Files: `core/roe_validator/__init__.py`, `__main__.py`, `rules.py`, `network.py`, `ownership.py`, `cli.py`, `tests/test_roe_validator.py`, `AGENTS.md`. The validator and report-ingestion caller remain intentionally unwired.
 - 2026-11-28 — Added the backend ROE validation and ownership workflow, role-gated review/admin actions, and run-time scope/window checks; added frontend ROE scope controls and injectable-validator tests. Backend/frontend typechecks and the isolated validator bridge tests pass. Database-backed tests were not run because `TEST_DATABASE_URL` is unset. Files: `backend/db/migrations/006_roe_validation.sql`, `backend/db/index.ts`, `backend/db/seed.ts`, `backend/db/reset.ts`, `backend/package.json`, `backend/roe/validator-client.ts`, `backend/routes/api.ts`, `backend/tests/auth.test.ts`, `backend/tests/roe-validator-client.test.ts`, `web/frontend/src/pages/AppPages.tsx`, `AGENTS.md`.
 - 2026-11-28 — Fixed requester dashboard loading against the existing legacy reports schema with migration 007, routed users to role-appropriate pages after login, and made the workspace logo return to the public home page. Verified requester dashboard and admin users page in the running app; backend/frontend typechecks pass. Files: `backend/db/index.ts`, `backend/db/migrations/007_report_generated_at.sql`, `web/frontend/src/lib/session.tsx`, `web/frontend/src/pages/AuthPages.tsx`, `web/frontend/src/router.tsx`, `web/frontend/src/components/ui.tsx`, `AGENTS.md`.
+- 2026-11-28 — Scope Guard step 1 adds versioned scope policies, run-to-policy/target binding columns, and tool-call audit storage in migration 008; migration registration and database test/reset cleanup are updated. Backend typecheck passes; database migration and integration tests await a disposable `TEST_DATABASE_URL`. Next: policy extraction and owner/admin policy API after user approval. Files: `backend/db/migrations/008_scope_policies.sql`, `backend/db/index.ts`, `backend/db/reset.ts`, `backend/tests/auth.test.ts`, `AGENTS.md`.
+- 2026-11-28 — Scope Guard step 2 adds Rules-only policy extraction, schema validation, code-side tool/flag/limit/time-window narrowing, policy hashing, and backend policy lifecycle/run binding with owner/admin access. Reviewer access is admin-only; the admin tools page now controls the catalog. Backend/frontend typechecks and isolated policy/validator tests pass; DB-backed migration/isolation tests await a disposable `TEST_DATABASE_URL`. Next: implement engine enforcement and wrap nmap/ZAP. Files: `core/scope_guard/`, `core/requirements.txt`, `backend/scope-guard/policy-client.ts`, `backend/db/migrations/008_scope_policies.sql`, `backend/db/migrations/009_scope_tool_settings.sql`, `backend/db/index.ts`, `backend/db/reset.ts`, `backend/routes/api.ts`, `backend/tests/auth.test.ts`, `backend/tests/policy-client.test.ts`, `backend/package.json`, `web/frontend/src/pages/AppPages.tsx`, `web/frontend/src/router.tsx`, `web/frontend/src/components/ui.tsx`, `web/frontend/src/lib/types.ts`, `AGENTS.md`.
+- 2026-11-28 — Scope Guard step 3 adds service-authenticated run-policy retrieval and audit writes, fail-closed policy/hash/window/target checks, pinned target validation, and guarded nmap/passive-ZAP dispatch. The CLI now requires `--run-id`; target addresses are restricted to local lab ranges and live/public addresses are rejected even in lab mode. Tests: Scope Guard 24/24, ROE Validator 16/16, and reporting 85/85 pass; backend typecheck and isolated service-token test pass. DB-backed integration tests were not run. Files: `backend/auth/service-token.ts`, `backend/routes/internal.ts`, `backend/app.ts`, `backend/.env.example`, `backend/tests/internal-auth.test.ts`, `backend/package.json`, `core/scope_guard/policy_client.py`, `core/scope_guard/target_check.py`, `core/scope_guard/tool_wrapper.py`, `core/scope_guard/tests/test_policy_client.py`, `core/scope_guard/tests/test_target_check.py`, `core/scope_guard/tests/test_tool_wrapper.py`, `core/tools/big_tools/nmap_wrapper.py`, `core/tools/big_tools/zap_wrapper.py`, `core/agent/react_loop.py`, `core/main.py`, `AGENTS.md`. Next: wait for approval before expanding guarded adapters or wiring report ingestion.
+- 2026-11-28 — Fixed backend test fixtures for the strict scope-policy contract. The policy-builder mock omitted four mandatory blocked actions; the run workflow test used the obsolete `target` request field, omitted `policyId`, and added a second ROE target without a matching ownership verification. Updated only test setup; no production policy checks were loosened. Full backend suite: 25/25 pass; backend typecheck passes. Files: `backend/tests/auth.test.ts`, `AGENTS.md`. Next: await the next task.
+- 2026-11-28 — Repaired the seven ROE DOCX fixtures with separate normalized validator fields, clean section headings, and timezone-aware authorization windows; added pytest coverage for validator decisions and Rules extraction. The forgery fixture is rejected by expiry only: the current validator has no authenticity/fraud detector. Tests: fixture pytest 8/8; combined fixture, ROE Validator, and Scope Guard tests 48/48. No production validation or extraction logic changed. Files: `core/tests/fixtures/roes/ROE-01_Normal_UserA.docx`, `ROE-02_Different_UserA.docx`, `ROE-03_UserB.docx`, `ROE-04_PromptInjection.docx`, `ROE-05_NoRulesSection.docx`, `ROE-06_BroadAsk_StrictRules.docx`, `ROE-07_Forged_Fraud.docx`, `core/tests/test_roe_scope_fixtures.py`, `AGENTS.md`. Next: await user approval for the next task.
 
 ---
 
@@ -499,7 +519,7 @@ The following items are planned but not yet started (confirmed from `Documentati
 |---|---|
 | **ROE Validator — automated** | Build the custom fraud/tampering detection algorithm that reads an uploaded ROE document and decides if it is genuine (RandomForest is only for the Risk Scorer). Currently every upload goes straight to manual review with `automated_decision = 'not_connected'`. |
 | **ROE Validator — manual** | The manual review queue UI and backend endpoints exist. What is missing: proper notification to reviewers, and the connection to the automated check result feeding into the queue. |
-| **Scope Guard — central wrapper** | Replace the temporary hostname allowlist in `tool_registry.py`. Goal: AI reads the approved ROE document and generates a JSON rules object (allowed hosts, paths, methods, time window). Plain Python code then enforces those rules. All tools must pass through one central function. The scope token from the database should gate this. |
+| **Scope Guard — adapter coverage** | Extend the fail-closed runtime guard beyond its current nmap and passive single-page ZAP adapters; every added tool needs safe argument reconstruction, exact target pinning, limits, and audit coverage. |
 | **Report Writer — better reporting** | Add a dual-summary format: (1) technical summary with CVE IDs, CVSS-style reasoning, evidence; (2) plain-language summary for non-technical stakeholders. Currently the report is a flat Markdown table. |
 | **More tools** | Additional wrappers (e.g. AJAX spider for ZAP, Burp Suite integration, custom SQLi/XSS scripts). |
 | **Database storage linked to user** | Engine scan results (findings, reports) are written to files only. They need to be inserted into the Postgres DB and linked to the authenticated user's run record. |

@@ -27,7 +27,7 @@ function RoleGate({ roles, children }: { roles: Role[]; children: ReactNode }) {
 }
 
 function roleHomePath(role: Role | undefined): string {
-  if (role === 'reviewer') return '/admin/review-queue';
+  if (role === 'reviewer') return '/';
   if (role === 'admin') return '/admin/users';
   return '/app/dashboard';
 }
@@ -138,7 +138,7 @@ export function AppRouter() {
         <Route path="/app/reports/:id" element={<RoleGate roles={['requester']}><ReportViewPage /></RoleGate>} />
         <Route path="/app/billing" element={<RoleGate roles={['requester']}><BillingPage /></RoleGate>} />
         <Route path="/app/settings" element={<SettingsPage />} />
-        <Route path="/admin/review-queue" element={<RoleGate roles={['reviewer', 'admin']}><ReviewQueuePage /></RoleGate>} />
+        <Route path="/admin/review-queue" element={<RoleGate roles={['admin']}><ReviewQueuePage /></RoleGate>} />
         <Route path="/admin/users" element={<RoleGate roles={['admin']}><AdminPage kind="users" /></RoleGate>} />
         <Route path="/admin/tools" element={<RoleGate roles={['admin']}><AdminPage kind="tools" /></RoleGate>} />
         <Route path="/admin/models" element={<RoleGate roles={['admin']}><AdminPage kind="models" /></RoleGate>} />

@@ -39,6 +39,8 @@ export type Roe = {
 export type Run = {
   id: string;
   roe_id: string;
+  policy_id: string | null;
+  target_id: string | null;
   status: 'queued' | 'running' | 'stopped' | 'complete' | 'failed';
   stage: 'recon' | 'scan' | 'identify' | 'verify';
   started_at: string;

@@ -1,0 +1,126 @@
+{
+  "ROE-01_Normal_UserA.docx": {
+    "file": "ROE-01_Normal_UserA.docx",
+    "stage": "run-created",
+    "roeId": "8941e267-c8a9-45fe-888d-125297e2fc4b",
+    "policyId": "845ff365-6a2f-4bfc-9221-68ef72a8da1d",
+    "runId": "fada3486-a08d-4738-bebc-11ec97e6c3fe",
+    "targetId": "9e0e54d1-9eaa-42b7-84fe-78593ec28ea3",
+    "tools": "nmap,zap",
+    "blocked": [
+      "active attacks",
+      "active scanning",
+      "active_scan",
+      "brute force",
+      "credential_bruteforce",
+      "denial of service",
+      "denial_of_service",
+      "exploitation",
+      "out_of_scope_redirect",
+      "raw_command_arguments",
+      "shell_execution",
+      "spider"
+    ]
+  },
+  "ROE-02_Different_UserA.docx": {
+    "file": "ROE-02_Different_UserA.docx",
+    "stage": "run-created",
+    "roeId": "5615bb9f-c5f4-4e28-bd69-eff15f130e8a",
+    "policyId": "a7438931-cc6e-4e85-89ab-0529ac6fba67",
+    "runId": "105b831b-d06b-43c1-bc2e-22a6a2964a89",
+    "targetId": "4ddfd7f8-384a-4d1c-9193-6d560c569fe3",
+    "tools": "nmap",
+    "blocked": [
+      "brute force",
+      "credential_bruteforce",
+      "denial of service",
+      "denial_of_service",
+      "exploitation",
+      "out_of_scope_redirect",
+      "raw_command_arguments",
+      "shell_execution",
+      "web application scanning"
+    ]
+  },
+  "ROE-03_UserB.docx": {
+    "file": "ROE-03_UserB.docx",
+    "stage": "run-created",
+    "roeId": "d46bc29e-214f-4e89-beaa-152ac80ae663",
+    "policyId": "ae592e91-c472-4795-8cdf-f46013c7c5b0",
+    "runId": "662c6038-eee9-4a6f-aef4-12bb8cd1e9bf",
+    "targetId": "bbb5587b-2e13-43b8-a90c-9296931f12d0",
+    "tools": "zap",
+    "blocked": [
+      "active scanning",
+      "active web scanning",
+      "brute force",
+      "credential_bruteforce",
+      "denial of service",
+      "denial_of_service",
+      "exploitation",
+      "out_of_scope_redirect",
+      "port scanning",
+      "raw_command_arguments",
+      "shell_execution"
+    ]
+  },
+  "ROE-04_PromptInjection.docx": {
+    "file": "ROE-04_PromptInjection.docx",
+    "stage": "run-created",
+    "roeId": "72258e2e-ebeb-4889-819c-4bc8978a02e0",
+    "policyId": "4a3380d2-8fcf-4962-867f-acc1805d4bcf",
+    "runId": "9e79087a-54ed-42ba-b70e-f6d995ae7e9a",
+    "targetId": "9e0e54d1-9eaa-42b7-84fe-78593ec28ea3",
+    "tools": "nmap,zap",
+    "blocked": [
+      "brute force",
+      "credential_bruteforce",
+      "denial of service",
+      "denial_of_service",
+      "exploitation",
+      "out_of_scope_redirect",
+      "raw_command_arguments",
+      "shell_execution"
+    ]
+  },
+  "ROE-05_NoRulesSection.docx": {
+    "file": "ROE-05_NoRulesSection.docx",
+    "stage": "policy-failed",
+    "roeId": "cf77ef20-6d7c-4a16-8b32-8609a3eead99",
+    "policyId": null,
+    "runId": null,
+    "targetId": "9e0e54d1-9eaa-42b7-84fe-78593ec28ea3",
+    "detail": {
+      "error": "The request could not be completed. Try again."
+    }
+  },
+  "ROE-06_BroadAsk_StrictRules.docx": {
+    "file": "ROE-06_BroadAsk_StrictRules.docx",
+    "stage": "run-created",
+    "roeId": "9361bf21-b57a-4211-885f-a57890273984",
+    "policyId": "092e847e-cdbc-4683-b5b2-882ae9acc286",
+    "runId": "79d8e66d-a19b-48a2-9ea2-8aef513a0c17",
+    "targetId": "9e0e54d1-9eaa-42b7-84fe-78593ec28ea3",
+    "tools": "zap",
+    "blocked": [
+      "SQL injection testing",
+      "brute force",
+      "credential_bruteforce",
+      "denial of service",
+      "denial_of_service",
+      "exploitation",
+      "out_of_scope_redirect",
+      "raw_command_arguments",
+      "shell_execution"
+    ]
+  },
+  "ROE-07_Forged_Fraud.docx": {
+    "file": "ROE-07_Forged_Fraud.docx",
+    "stage": "rejected",
+    "roeId": "85b0ab01-91d2-48e1-8c37-01796fc4c257",
+    "policyId": null,
+    "runId": null,
+    "targetId": "9e0e54d1-9eaa-42b7-84fe-78593ec28ea3",
+    "detail": "status=rejected {\"roe\":{\"id\":\"85b0ab01-91d2-48e1-8c37-01796fc4c257\",\"owner_id\":\"006218e8-0657-425f-ae47-761e6527fd6e\",\"file_name\":\"ROE-07_Forged_Fraud.docx\",\"target_ids_json\":\"[\\\"9e0e54d1-9eaa-42b7-84fe-78593ec28ea3\\\"]\",\"scope_json\":\"{\\\"targets\\\":[\\\"http://127.0.0.1:3000\\\"],\\\"allowed_tools\\\":[\\\"nmap\\\",\\\"zap\\\"],\\\"start_time\\\":\\\"2024-01-01T00:00:00.000Z\\\",\\\"end_time\\\":\\\"2024-01-31T00:00:00.000Z\\\"}\",\"attestation\":true,\"status\":\"rejected\",\"automated_decision\":\"invalid\",\"confidence\":null,\"reasons_json\":\"[\\\"The authorization window has expired.\\\"]\",\"reviewer_id\":null,\"decision\":null,\"note\":null,\"decided_at\":null,\"scope_token\":null,\"scope_token_issued_at\":null,\"file_path\":\"E:\\\\PENFLOW AI\\\\backend\\\\data\\\\roe-uploads\\\\6946a189-0331-405e-b5dd-3b9fb50dc458.docx\",\"uploaded_at\":\"2026-11-28T12:47:31.038Z\",\"lab_mode\":true}}"
+  }
+}

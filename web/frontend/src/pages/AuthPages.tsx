@@ -26,10 +26,10 @@ export function LoginPage() {
       const signedInUser = await signIn(email, password);
       const requestedPath = params.get('returnTo') ?? '';
       const defaultPath = signedInUser.role === 'requester' ? '/app/dashboard'
-        : signedInUser.role === 'reviewer' ? '/admin/review-queue' : '/admin/users';
+        : signedInUser.role === 'reviewer' ? '/' : '/admin/users';
       const allowedReturnPath = requestedPath.startsWith('/') && !requestedPath.startsWith('//')
         && (signedInUser.role === 'requester' ? requestedPath.startsWith('/app/')
-          : signedInUser.role === 'reviewer' ? requestedPath === '/admin/review-queue'
+          : signedInUser.role === 'reviewer' ? false
             : requestedPath.startsWith('/admin/'));
       navigate(allowedReturnPath ? requestedPath : defaultPath, { replace: true });
     }

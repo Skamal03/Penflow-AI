@@ -1,7 +1,8 @@
 import sys
-from tools.tool_registry import run_tool, check_scope, TOOLS, ScopeError
+from tools.tool_registry import TOOLS, ScopeError
 from tools.shell import ToolError, ToolSkipped
 from logging_system.action_logger import log_action
+from scope_guard.tool_wrapper import ScopeGuard
 from tools.custom_scripts import header_checks  # noqa: F401 (registers the tool)
 from tools.big_tools import (  # noqa: F401 (each import registers its tool)
     nmap_wrapper, whatweb_wrapper, wafw00f_wrapper, ffuf_wrapper,
@@ -30,13 +31,21 @@ def _set(tool: str, status: str, count: int = 0, detail: str = "") -> None:
     RUN_STATUS[tool] = {"status": status, "count": count, "detail": detail}
 
 
-def run(target_url: str, only: list[str] | None = None) -> list[dict]:
+def run(
+    target_url: str,
+    only: list[str] | None = None,
+    run_id: str | None = None,
+) -> list[dict]:
     """only: optional list of tool names to run (handy for testing one tool at a time)."""
-    check_scope(target_url)  # wrong target -> ScopeError before anything runs
     RUN_STATUS.clear()
+    if not run_id:
+        raise ScopeError("A database run UUID is required to load the active scope policy.")
+    guard = ScopeGuard(run_id)
+    policy_payload = guard.authorize_run(target_url)
+    selected_tools = set(policy_payload["policy_json"]["selected_tools"])
     all_findings: list[dict] = []
 
-    for tool_name in [t for t in TOOL_ORDER if only is None or t in only]:
+    for tool_name in [t for t in TOOL_ORDER if (only is None or t in only) and t in selected_tools]:
         if tool_name not in TOOLS:
             _set(tool_name, "skipped", detail="not registered")
             continue
@@ -49,7 +58,7 @@ def run(target_url: str, only: list[str] | None = None) -> list[dict]:
 
         _say(f"[*] {tool_name} ...")
         try:
-            findings = run_tool(tool_name, target_url=target_url)
+            findings = guard.run(tool_name, {"target_url": target_url})
         except ScopeError as e:
             log_action("scope_blocked", tool_name, str(e))
             raise
@@ -78,4 +87,7 @@ def run(target_url: str, only: list[str] | None = None) -> list[dict]:
             # so a scan never spends tokens per finding.
             f["summary"] = f["name"]
         all_findings.extend(findings)
+    for tool_name in TOOL_ORDER:
+        if tool_name not in selected_tools:
+            _set(tool_name, "skipped", detail="not selected by the active scope policy")
     return all_findings

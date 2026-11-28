@@ -305,11 +305,13 @@ function roeStep(status: string) {
 export function RoeStatusPage() {
   const { id = '' } = useParams();
   const { data, loading, error, reload } = useApi<{ roe: Roe }>(`/roe/${id}`);
+  const { data: targetData } = useApi<{ targets: Target[] }>('/targets');
   const roe = data?.roe;
   const scopeJson = roe?.scope_json ?? '[]';
   const scope = parseJsonArray(scopeJson);
   const [selectedTarget, setSelectedTarget] = useState('');
   const [runError, setRunError] = useState('');
+  const [startingRun, setStartingRun] = useState(false);
   useEffect(() => {
     if (!scope.length) setSelectedTarget('');
     else if (!scope.includes(selectedTarget)) setSelectedTarget(scope[0] ?? '');
@@ -319,7 +321,27 @@ export function RoeStatusPage() {
   if (!roe) return <EmptyState title="This ROE document was not found." />;
   const status = String(roe.status);
   const reasons = parseJsonArray(roe.reasons_json);
+  const roeTargetIds = parseJsonArray(roe.target_ids_json);
   const step = roeStep(status);
+  const selectedTargetRecord = targetData?.targets.find((target) => roeTargetIds.includes(target.id) && target.url === selectedTarget && target.status === 'verified');
+  async function startRun() {
+    if (!selectedTargetRecord) {
+      setRunError('Choose a verified target attached to this ROE.');
+      return;
+    }
+    setStartingRun(true);
+    setRunError('');
+    try {
+      const { policyId } = await api.post<{ policyId: string }>(`/roe/${roe!.id}/policy`, { targetId: selectedTargetRecord.id });
+      const result = await api.post<{ run: Run }>('/runs', { roeId: roe!.id, targetId: selectedTargetRecord.id, policyId });
+      window.location.assign(`/app/runs/${result.run.id}`);
+    } catch (caught) {
+      setRunError((caught as Error).message);
+      reload();
+    } finally {
+      setStartingRun(false);
+    }
+  }
   return <><PageHeader eyebrow={`WORKSPACE / ROE / ${roe.id}`} title="Authorization status" detail={roe.file_name} action={status === 'rejected' ? <Link className="button button-secondary" to="/app/roe/new">Upload a corrected document</Link> : undefined} />
     <div className="panel"><div className="panel-heading"><h2>ROE verdict</h2><StatusBadge value={status} /></div><ol className="roe-rail">{['Submitted', 'Automated check', 'Manual review', 'Scope token'].map((label, index) => <li key={label} className={index <= step ? 'is-current' : ''}>{String(index + 1).padStart(2, '0')} · {label}</li>)}</ol>
       <p><strong>Automated decision:</strong> {roe.automated_decision}{roe.confidence !== null && <> · confidence <code>{roe.confidence.toFixed(2)}</code></>}</p>
@@ -329,7 +351,7 @@ export function RoeStatusPage() {
     <section className="panel"><div className="panel-heading"><h2>Approved scope</h2></div>{scope.length ? <ul className="scope-list">{scope.map((target) => <li key={target}><code>{target}</code></li>)}</ul> : <p className="small">No target scope is attached.</p>}
       {roe.scope_token ? <div className="scope-token" style={{ marginTop: 18 }}><strong>Scope token issued</strong><p className="small">Issued {roe.scope_token_issued_at ? new Date(roe.scope_token_issued_at).toLocaleString() : ''}. The displayed value is a stored token hash.</p><code>{roe.scope_token}</code></div> : <div className="scope-none" style={{ marginTop: 18 }}><strong>No token issued</strong><p className="small" style={{ margin: '5px 0 0' }}>No security test can start until this ROE is approved and a scope token is issued.</p></div>}
       {runError && <Alert tone="danger" role="alert">{runError}</Alert>}
-      <div className="section-block"><h3>Start security test</h3><p className="small">Read-only targets from this ROE. A run can start only after approval.</p><label className="field"><span>Target</span><select value={selectedTarget} onChange={(event) => { setSelectedTarget(event.target.value); setRunError(''); }}>{scope.map((target) => <option key={target} value={target}>{target}</option>)}</select></label><Button disabled={!roe.scope_token || !selectedTarget || status !== 'approved'} aria-describedby="roe-start-reason" onClick={async () => { setRunError(''); try { const result = await api.post<{ run: Run }>('/runs', { roeId: roe.id, target: selectedTarget }); window.location.assign(`/app/runs/${result.run.id}`); } catch (caught) { setRunError((caught as Error).message); reload(); } }}>Start security test</Button><span id="roe-start-reason" className="sr-only">{!roe.scope_token || status !== 'approved' ? 'Disabled because this ROE is not approved.' : !selectedTarget ? 'Choose a target included in this ROE.' : 'This approved ROE has a scope token.'}</span></div>
+      <div className="section-block"><h3>Start security test</h3><p className="small">A strict policy is built from this approved ROE before a run can start.</p><label className="field"><span>Target</span><select value={selectedTarget} onChange={(event) => { setSelectedTarget(event.target.value); setRunError(''); }}>{scope.map((target) => <option key={target} value={target}>{target}</option>)}</select></label><Button disabled={!roe.scope_token || !selectedTargetRecord || status !== 'approved' || startingRun} aria-describedby="roe-start-reason" onClick={() => void startRun()}>{startingRun ? 'Building policy…' : 'Start security test'}</Button><span id="roe-start-reason" className="sr-only">{!roe.scope_token || status !== 'approved' ? 'Disabled because this ROE is not approved.' : !selectedTargetRecord ? 'Choose a verified target included in this ROE.' : 'An approved ROE and exact target policy are required.'}</span></div>
     </section>
   </>;
 }
@@ -365,7 +387,15 @@ export function RunMonitorPage() {
   const elapsed = Math.max(0, Math.floor((clock - new Date(run.started_at).getTime()) / 1000));
   const scope = parseJsonArray(run.scope_json);
   async function startAgain() {
-    try { const result = await api.post<{ run: Run }>('/runs', { roeId: run!.roe_id }); navigate(`/app/runs/${result.run.id}`); }
+    if (!run!.target_id) {
+      setActionError('This older run has no bound target. Start a new run from its approved ROE.');
+      return;
+    }
+    try {
+      const { policyId } = await api.post<{ policyId: string }>(`/roe/${roe!.id}/policy`, { targetId: run!.target_id });
+      const result = await api.post<{ run: Run }>('/runs', { roeId: run!.roe_id, targetId: run!.target_id, policyId });
+      navigate(`/app/runs/${result.run.id}`);
+    }
     catch (caught) { setActionError((caught as Error).message); }
   }
   async function stopRun() {
@@ -375,7 +405,7 @@ export function RunMonitorPage() {
   return <><PageHeader eyebrow={`WORKSPACE / RUNS / ${run.id}`} title="Run monitor" detail={<span>Simulated live view — engine not connected. <code>{run.id}</code></span>} action={run.status === 'running' ? <Button variant="danger" onClick={() => void stopRun()}>Stop test</Button> : <Link className="button button-secondary" to={`/app/findings/${run.id}`}>View findings</Link>} />
     {actionError && <Alert tone="danger" role="alert">{actionError}</Alert>}
     <section className="panel"><div className="panel-heading"><h2>Run state</h2><StatusBadge value={run.status} /></div><div className="stats-grid"><div className="stat"><span>Current stage</span><strong>{run.stage}</strong></div><div className="stat"><span>Elapsed</span><strong>{Math.floor(elapsed / 60)}m {elapsed % 60}s</strong></div><div className="stat"><span>Started</span><strong style={{ fontSize: 16 }}>{new Date(run.started_at).toLocaleTimeString()}</strong></div><div className="stat"><span>Engine</span><strong style={{ fontSize: 16 }}>Not connected</strong></div></div><div style={{ marginTop: 20 }}><StageTracker current={run.stage} /></div></section>
-    <section className="panel"><div className="panel-heading"><h2>Approved scope summary</h2></div><ul className="scope-list">{scope.map((target) => <li key={target}><code>{target}</code></li>)}</ul>{roe.scope_token ? <p className="small" style={{ marginTop: 12 }}>Scope token issued · hash <code>{roe.scope_token.slice(0, 20)}…</code></p> : <div className="scope-none"><strong>No token issued</strong><p>The test cannot start until a reviewer approves this scope.</p></div>}<Button disabled={!roe.scope_token || run.status === 'running' || run.status === 'complete'} aria-describedby="start-disabled-reason" onClick={() => void startAgain()}>{run.status === 'running' ? 'Test in progress' : 'Start security test'}</Button><span id="start-disabled-reason" className="sr-only">{!roe.scope_token ? 'An approved ROE and scope token are required.' : run.status === 'complete' ? 'This run is already complete.' : run.status === 'running' ? 'A run is already in progress.' : ''}</span></section>
+    <section className="panel"><div className="panel-heading"><h2>Approved scope summary</h2></div><ul className="scope-list">{scope.map((target) => <li key={target}><code>{target}</code></li>)}</ul>{roe.scope_token ? <p className="small" style={{ marginTop: 12 }}>Scope token issued · hash <code>{roe.scope_token.slice(0, 20)}…</code></p> : <div className="scope-none"><strong>No token issued</strong><p>The test cannot start until an administrator approves this scope.</p></div>}<Button disabled={!roe.scope_token || !run.target_id || run.status === 'running' || run.status === 'complete'} aria-describedby="start-disabled-reason" onClick={() => void startAgain()}>{run.status === 'running' ? 'Test in progress' : 'Start security test'}</Button><span id="start-disabled-reason" className="sr-only">{!roe.scope_token ? 'An approved ROE and scope token are required.' : run.status === 'complete' ? 'This run is already complete.' : run.status === 'running' ? 'A run is already in progress.' : ''}</span></section>
     <section className="section-block"><div className="section-heading"><div><span className="section-kicker">AUDIT TRAIL</span><h2>Action log</h2></div><Link to={`/app/findings/${run.id}`}>Findings</Link></div><LogViewer events={(data?.events ?? []).slice(0, visibleEvents)} /></section>
   </>;
 }
@@ -470,10 +500,19 @@ export function AdminPage({ kind }: { kind: 'users' | 'tools' | 'models' | 'audi
   const { data, loading, error, reload } = useApi<Record<string, Array<Record<string, unknown>>>>(endpoint);
   const [blockedOnly, setBlockedOnly] = useState(false);
   const [actor, setActor] = useState('');
+  const [toolError, setToolError] = useState('');
+  const [busyTool, setBusyTool] = useState('');
   const events = (data?.events ?? []) as unknown as AuditEvent[];
   const filtered = useMemo(() => events.filter((event) => (!blockedOnly || Boolean(event.blocked)) && (!actor || event.actor === actor)), [events, blockedOnly, actor]);
   const titles = { users: 'Users', tools: 'Tools registry', models: 'Model versions', 'audit-log': 'Audit log' };
-  return <><PageHeader eyebrow="STAFF / ADMINISTRATION" title={titles[kind]} detail={kind === 'audit-log' ? 'All workspace audit events, including the single refused out-of-scope request.' : 'Read-only operational view. Engine integrations are not connected.'} />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : kind === 'audit-log' ? <><div className="panel"><div className="field"><label htmlFor="audit-actor">Filter by actor</label><select id="audit-actor" value={actor} onChange={(event) => setActor(event.target.value)}><option value="">All actors</option>{['requester', 'agent', 'scope_guard', 'reviewer', 'system'].map((value) => <option key={value}>{value}</option>)}</select></div><Checkbox name="blockedOnly" checked={blockedOnly} onChange={(event) => setBlockedOnly(event.target.checked)} label="Show blocked events only" /></div><LogViewer events={filtered} /></> : kind === 'users' ? <><AdminRows kind="users" rows={data?.users ?? []} /><section className="section-block"><div className="section-heading"><h2>Waitlist entries</h2></div><AdminRows kind="waitlist" rows={data?.waitlist ?? []} /></section></> : <AdminRows kind={kind} rows={data?.[kind] ?? []} />}</>;
+  async function setToolEnabled(name: string, enabled: boolean) {
+    setBusyTool(name);
+    setToolError('');
+    try { await api.put(`/admin/tools/${encodeURIComponent(name)}`, { enabled }); reload(); }
+    catch (caught) { setToolError((caught as Error).message); reload(); }
+    finally { setBusyTool(''); }
+  }
+  return <><PageHeader eyebrow="STAFF / ADMINISTRATION" title={titles[kind]} detail={kind === 'audit-log' ? 'All workspace audit events, including the single refused out-of-scope request.' : kind === 'tools' ? 'Enable only the tools administrators have approved for policy generation.' : 'Read-only operational view. Engine integrations are not connected.'} />{loading ? <LoadingState /> : error ? <ErrorState message={error} onRetry={reload} /> : kind === 'audit-log' ? <><div className="panel"><div className="field"><label htmlFor="audit-actor">Filter by actor</label><select id="audit-actor" value={actor} onChange={(event) => setActor(event.target.value)}><option value="">All actors</option>{['requester', 'agent', 'scope_guard', 'reviewer', 'system'].map((value) => <option key={value}>{value}</option>)}</select></div><Checkbox name="blockedOnly" checked={blockedOnly} onChange={(event) => setBlockedOnly(event.target.checked)} label="Show blocked events only" /></div><LogViewer events={filtered} /></> : kind === 'users' ? <><AdminRows kind="users" rows={data?.users ?? []} /><section className="section-block"><div className="section-heading"><h2>Waitlist entries</h2></div><AdminRows kind="waitlist" rows={data?.waitlist ?? []} /></section></> : kind === 'tools' ? <section className="panel"><h2>Enabled tool catalog</h2>{toolError && <Alert tone="danger" role="alert">{toolError}</Alert>}{(data?.tools ?? []).map((tool) => <Checkbox key={String(tool.name)} name={`tool-${String(tool.name)}`} checked={Boolean(tool.enabled)} disabled={busyTool === tool.name} onChange={(event) => void setToolEnabled(String(tool.name), event.target.checked)} label={`${String(tool.name)} enabled for policies`} />)}</section> : <AdminRows kind={kind} rows={data?.[kind] ?? []} />}</>;
 }
 
 function AdminRows({ kind, rows }: { kind: string; rows: Array<Record<string, unknown>> }) {

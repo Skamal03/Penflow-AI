@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:reset": "tsx db/reset.ts",
-    "test": "cross-env NODE_ENV=test node --import tsx --test tests/auth.test.ts tests/roe-validator-client.test.ts",
+    "test": "cross-env NODE_ENV=test node --import tsx --test tests/auth.test.ts tests/internal-auth.test.ts tests/policy-client.test.ts tests/roe-validator-client.test.ts",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {

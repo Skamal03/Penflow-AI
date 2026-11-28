@@ -361,7 +361,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const [noticeVisible, setNoticeVisible] = useState(() => sessionStorage.getItem('engine-notice-dismissed') !== '1');
   const [switchError, setSwitchError] = useState('');
   const showRoleSwitch = import.meta.env.DEV && import.meta.env.VITE_DEV_ROLE_SWITCH === 'true';
-  const roleLinks = user?.role === 'requester' ? requesterNav : user?.role === 'reviewer' ? [['/admin/review-queue', 'Review queue']] : [['/admin/review-queue', 'Review queue'], ['/admin/users', 'Users'], ['/admin/tools', 'Tools'], ['/admin/models', 'Models'], ['/admin/audit-log', 'Audit log']];
+  const roleLinks = user?.role === 'requester' ? requesterNav : user?.role === 'admin' ? [['/admin/review-queue', 'Review queue'], ['/admin/users', 'Users'], ['/admin/tools', 'Tools'], ['/admin/models', 'Models'], ['/admin/audit-log', 'Audit log']] : [];
 
   async function leave() {
     await signOut();
@@ -417,9 +417,9 @@ export function AccessDenied({ role }: { role?: Role }) {
   const message = role === 'requester'
     ? 'Your role can access its own dashboard, targets, ROE documents, runs, findings, reports, billing, and settings.'
     : role === 'reviewer'
-      ? 'Your role can access the ROE review queue. Administrator screens and requester workspaces are restricted.'
+      ? 'ROE review and administrator screens are restricted to administrators.'
       : 'Your administrator role can access staff tools, model information, users, and the global audit log.';
-  const destination = role === 'requester' ? '/app/dashboard' : role === 'reviewer' ? '/admin/review-queue' : '/admin/users';
+  const destination = role === 'requester' ? '/app/dashboard' : role === 'reviewer' ? '/' : '/admin/users';
   return <section className="page-wrap narrow"><span className="eyebrow">403 · ACCESS CONTROL</span><h1>This page is not available to your role.</h1><p>{message}</p><Link className="button button-secondary" to={destination}>Go to an available page</Link></section>;
 }
 
