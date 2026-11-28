@@ -5,7 +5,7 @@ import type { Role, User } from './types';
 type SessionValue = {
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<User>;
   signUp: (payload: { email: string; password: string; displayName: string; accountType: string; acceptedTerms: boolean }) => Promise<void>;
   signOut: () => Promise<void>;
   switchRole: (role: Role) => Promise<void>;
@@ -39,6 +39,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     signIn: async (email, password) => {
       const result = await api.post<SessionResponse>('/auth/login', { email, password });
       setUser(result.user);
+      return result.user;
     },
     signUp: async (payload) => {
       await api.post('/auth/register', payload);

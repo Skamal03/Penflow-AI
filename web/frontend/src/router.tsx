@@ -26,6 +26,23 @@ function RoleGate({ roles, children }: { roles: Role[]; children: ReactNode }) {
   return children;
 }
 
+function roleHomePath(role: Role | undefined): string {
+  if (role === 'reviewer') return '/admin/review-queue';
+  if (role === 'admin') return '/admin/users';
+  return '/app/dashboard';
+}
+
+function WorkspaceHome() {
+  const { user } = useSession();
+  return <Navigate to={roleHomePath(user?.role)} replace />;
+}
+
+function DashboardHome() {
+  const { user } = useSession();
+  if (user?.role !== 'requester') return <Navigate to={roleHomePath(user?.role)} replace />;
+  return <DashboardPage />;
+}
+
 function RouteFocus() {
   const location = useLocation();
   useEffect(() => {
@@ -107,8 +124,8 @@ export function AppRouter() {
     </Route>
     <Route element={<RequireSession />}>
       <Route element={<AppShell />}>
-        <Route path="/app" element={<Navigate to="/app/dashboard" replace />} />
-        <Route path="/app/dashboard" element={<RoleGate roles={['requester']}><DashboardPage /></RoleGate>} />
+        <Route path="/app" element={<WorkspaceHome />} />
+        <Route path="/app/dashboard" element={<DashboardHome />} />
         <Route path="/app/targets" element={<RoleGate roles={['requester']}><TargetsPage /></RoleGate>} />
         <Route path="/app/targets/new" element={<RoleGate roles={['requester']}><TargetsPage /></RoleGate>} />
         <Route path="/app/roe/new" element={<RoleGate roles={['requester']}><RoeNewPage /></RoleGate>} />

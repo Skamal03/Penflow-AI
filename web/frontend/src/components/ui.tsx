@@ -370,7 +370,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   return <><SkipLink /><BackgroundOrbs /><div className="app-frame">
     <header className="app-topbar">
-      <Link className="wordmark" to="/app/dashboard"><span className="wordmark-glyph" aria-hidden="true"><i /><i /></span><span>penflow</span></Link>
+      <Link className="wordmark" to="/" aria-label="PenflowAI home"><span className="wordmark-glyph" aria-hidden="true"><i /><i /></span><span>penflow</span></Link>
       <div className="app-user-bar glass-panel">
         <span className="user-dot" aria-hidden="true" />
         <span className="user-name">{user?.displayName}</span>

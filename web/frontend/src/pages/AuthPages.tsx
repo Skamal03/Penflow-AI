@@ -22,7 +22,17 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(''); setBusy(true);
-    try { await signIn(email, password); navigate(params.get('returnTo') || '/app/dashboard', { replace: true }); }
+    try {
+      const signedInUser = await signIn(email, password);
+      const requestedPath = params.get('returnTo') ?? '';
+      const defaultPath = signedInUser.role === 'requester' ? '/app/dashboard'
+        : signedInUser.role === 'reviewer' ? '/admin/review-queue' : '/admin/users';
+      const allowedReturnPath = requestedPath.startsWith('/') && !requestedPath.startsWith('//')
+        && (signedInUser.role === 'requester' ? requestedPath.startsWith('/app/')
+          : signedInUser.role === 'reviewer' ? requestedPath === '/admin/review-queue'
+            : requestedPath.startsWith('/admin/'));
+      navigate(allowedReturnPath ? requestedPath : defaultPath, { replace: true });
+    }
     catch (caught) { setError((caught as Error).message); }
     finally { setBusy(false); }
   }
